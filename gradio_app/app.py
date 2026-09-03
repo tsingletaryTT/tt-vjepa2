@@ -41,7 +41,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from moves import MOVES, build_choreography, build_show  # noqa: E402
 from planning import cem_search  # noqa: E402
-from robot_viz import build_dance_figure, build_show_figure, integrate_pose  # noqa: E402
+from robot_viz import build_dance_figure, build_multi_dancer_figure, integrate_pose  # noqa: E402
 
 # Injected into the iframe's own document (not the outer Gradio page) after the
 # figure's HTML: polls until Plotly.addFrames has actually populated frames (rather
@@ -87,21 +87,46 @@ EXAMPLE_TRAJ = REPO_ROOT / "reference" / "notebooks" / "franka_example_traj.npz"
 
 # "Die Mensch-Maschine" palette: black ground, red/white accents, a geometric
 # display face standing in for Kraftwerk's own Futura/Eurostile look (Orbitron is the
-# closest well-supported Google Font to that family).
+# closest well-supported Google Font to that family). This stays exactly as-is for the
+# show/dance iframes themselves (see wrap_iframe) -- it's the performance's own
+# identity, not the surrounding app chrome.
 KRAFTWERK_FONT_IMPORT = "@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&display=swap');"
-KRAFTWERK_CSS = f"""
-{KRAFTWERK_FONT_IMPORT}
-.gradio-container {{ background: #000000 !important; }}
-.gradio-container, .gradio-container * {{ font-family: 'Orbitron', monospace !important; }}
-h1, h2, h3 {{ color: #ff2b2b !important; text-transform: uppercase; letter-spacing: 0.08em; }}
-label span, .label-wrap span {{ color: #ff2b2b !important; text-transform: uppercase; letter-spacing: 0.04em; }}
-button {{ text-transform: uppercase !important; letter-spacing: 0.06em !important; border-radius: 0 !important; }}
+
+# The surrounding Gradio UI (outside the iframes) uses tt-toplike's "Grayskull" theme
+# concept (see ~/code/tt-toplike/src/ui/colors.rs::grayskull_rgb): the rainbow
+# collapsed to "a thousand shades of grey", with hot pink as the one deliberately
+# saturated accent color -- a moody, monochrome hacker-tool look, distinct from both
+# the show's own Kraftwerk red/black and a first attempt at a lighter, literal
+# brand-color theme that didn't read right. Neue Haas Unica Pro / Degular (the actual
+# TT brand type) aren't freely licensed for web embedding, so IBM Plex Sans stands in:
+# a clean, geometric, neutral face, picked specifically to avoid the generic
+# Inter/Space-Grotesk "AI-default" look.
+TT_BRAND_FONT_IMPORT = (
+    "@import url('https://fonts.googleapis.com/css2?"
+    "family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap');"
+)
+TT_BRAND_CSS = f"""
+{TT_BRAND_FONT_IMPORT}
+.gradio-container {{ background: #0d0d0d !important; }}
+.gradio-container, .gradio-container * {{ font-family: 'IBM Plex Sans', sans-serif !important; }}
+/* Same specificity lesson as the button fix below: Gradio's own scoped text-color
+   rules can outrank a plain single-class selector even with !important, so match
+   broadly and use !important throughout. */
+.gradio-container p, .gradio-container span, .gradio-container .prose, .gradio-container .prose * {{
+  color: #cfcfcf !important;
+}}
+h1, h2, h3 {{ color: #eaeaea !important; letter-spacing: -0.01em; }}
+h1 {{ color: #ff4fa3 !important; }}
+label span, .label-wrap span {{ color: #8a8a8a !important; font-weight: 500; }}
+button {{ border-radius: 10px !important; font-weight: 500 !important; background: #1a1a1a !important; color: #cfcfcf !important; border: 1px solid #333333 !important; }}
 /* Gradio's own scoped button rule (e.g. `.primary.svelte-xxxx`) has 2 class
    selectors of specificity -- `button.primary` alone (1 class + 1 type) loses that
    tie even with !important. Match with >=2 classes so this reliably outranks it
    regardless of the build's scoped-class hash. */
-button.lg.primary, button.lg.primary * {{ background: #ff2b2b !important; color: #000 !important; border: 2px solid #ff2b2b !important; font-weight: 700 !important; }}
-.tabs button {{ color: #ff2b2b !important; }}
+button.lg.primary, button.lg.primary * {{ background: #ff4fa3 !important; color: #0d0d0d !important; border: none !important; font-weight: 600 !important; }}
+.tabs button {{ color: #8a8a8a !important; font-weight: 500; }}
+.tabs button.selected {{ color: #ff4fa3 !important; }}
+.block {{ background: #161616 !important; border-color: #2a2a2a !important; border-radius: 12px !important; }}
 """
 
 
@@ -250,16 +275,20 @@ def run_cem_plan(backend, frames: np.ndarray, states: np.ndarray, cem_steps: int
     return fig, report
 
 
-def imagination_rollout(backend, start_frame: np.ndarray, start_pose: np.ndarray, actions: np.ndarray):
+def imagination_rollout(backend, start_frame: np.ndarray, start_pose: np.ndarray, actions: np.ndarray,
+                         rep0: torch.Tensor | None = None):
     """The core loop shared by every imagined-rollout tab: encode the one real
-    starting frame, then chain the predictor's own output back in as the next
-    'observed' frame for each action in turn -- exactly Meta's own CEM planner's
-    imagination step (see world_model_wrapper.py::WorldModel.infer_next_action),
-    just driven by a pre-chosen action sequence instead of a live optimizer.
+    starting frame (unless a precomputed `rep0` is passed in, e.g. when several
+    independent rollouts share the same starting frame -- see run_show), then chain
+    the predictor's own output back in as the next 'observed' frame for each action in
+    turn -- exactly Meta's own CEM planner's imagination step (see
+    world_model_wrapper.py::WorldModel.infer_next_action), just driven by a
+    pre-chosen action sequence instead of a live optimizer.
     Returns (poses [N+1,7], energies [N], latencies_ms [N])."""
     n_steps = len(actions)
     poses = integrate_pose(start_pose, actions)
-    rep0 = backend.encode_frame(start_frame)
+    if rep0 is None:
+        rep0 = backend.encode_frame(start_frame)
     reps = rep0.unsqueeze(1)  # [1,1,HW,D]
     states_seq = [start_pose]
     energies, latencies = [], []
@@ -288,11 +317,13 @@ def run_choreography(backend, frames: np.ndarray, states: np.ndarray, sequence: 
     poses, energies, latencies = imagination_rollout(backend, frames[0], start_pose, actions)
 
     fig = build_dance_figure(poses, energies, latencies)
-    segment_lines = "\n".join(f"- **{name}**: steps {start}–{end}" for name, start, end in segments)
+    segment_table = "| # | Move | Steps |\n|---|---|---|\n" + "\n".join(
+        f"| {i + 1} | {name} | {start}–{end} |" for i, (name, start, end) in enumerate(segments)
+    )
     report = (
         f"**Backend:** {backend.name} — {len(actions)} imagined steps across "
         f"{len(segments)} moves, {np.mean(latencies):.2f} ms/step avg predictor latency\n\n"
-        f"{segment_lines}\n\n"
+        f"{segment_table}\n\n"
         f"Color = per-step imagined-embedding change (hue, biased red = bigger "
         f"change) and real measured latency (brightness). No ground-truth video "
         f"exists for this choreography -- the model is chaining its own predicted "
@@ -302,28 +333,70 @@ def run_choreography(backend, frames: np.ndarray, states: np.ndarray, sequence: 
     return fig, report
 
 
+STAGE_SPACING = 0.55  # meters between each act's own spot on the shared stage
+
+
 def run_show(backend, frames: np.ndarray, states: np.ndarray):
     """The full seven-act show (moves.build_show): INSTANT KRAFTWERK, Careful with
     that Ax Eugene, Tangerine Ratchet, Poppin and Lockin, Your Name on a Grain of Rice,
-    Laser Cats Cutting a Rug, and the XOXO TT finale -- one continuous rollout, with
-    per-act palette/camera framing baked into the figure by robot_viz.build_show_figure.
-    Returns (plotly animated figure, markdown report)."""
+    Laser Cats Cutting a Rug, and the XOXO TT finale -- staged as separate dancers, not
+    one continuous trajectory. Consecutive act_segments sharing a display name (e.g.
+    the Ax Eugene build + its snap) are grouped into one 'slot': each slot gets its own
+    independent imagination rollout, always starting fresh from the same one real
+    encoded frame (never chained from a previous act's ending pose), then placed at
+    its own fixed spot on the stage. Earlier slots stay frozen in their final pose as
+    the show moves on to the next, instead of one dancer relocating through all seven
+    acts -- and since no single rollout call now needs more than the longest ONE act's
+    own step count as context (not the cumulative total across the whole show), this
+    is also considerably safer on device memory than the one-continuous-rollout
+    version was (see functional_predictor.py's get_rope_and_mask docstring for why an
+    ever-growing single context is the actual DRAM-exhaustion risk)."""
     actions, pen_up, labels, act_segments = build_show()
     start_pose = states[0].copy()
-    poses, energies, latencies = imagination_rollout(backend, frames[0], start_pose, actions)
-    fig = build_show_figure(poses, energies, latencies, pen_up, labels, act_segments)
+    rep0 = backend.encode_frame(frames[0])  # shared across every slot's independent rollout
 
-    act_lines = "\n".join(f"- **{seg['name']}**: steps {seg['start']}–{seg['end']} ({seg['palette']})"
-                           for seg in act_segments)
+    slot_groups = []
+    for seg in act_segments:
+        if slot_groups and slot_groups[-1]["name"] == seg["name"]:
+            slot_groups[-1]["segments"].append(seg)
+        else:
+            slot_groups.append({"name": seg["name"], "segments": [seg]})
+
+    slots = []
+    for i, group in enumerate(slot_groups):
+        lo, hi = group["segments"][0]["start"], group["segments"][-1]["end"]
+        poses, energies, latencies = imagination_rollout(
+            backend, frames[0], start_pose, actions[lo:hi], rep0=rep0
+        )
+        poses = poses.copy()
+        poses[:, :3] += np.array([0.0, i * STAGE_SPACING, 0.0], dtype=np.float32)
+        palette_segments = [(seg["palette"], seg["start"] - lo, seg["end"] - lo) for seg in group["segments"]]
+        slots.append(dict(
+            name=group["name"], poses=poses, energies=energies, latencies_ms=latencies,
+            pen_up=pen_up[lo:hi], labels=labels[lo:hi], palette_segments=palette_segments,
+            zoom=group["segments"][0]["zoom"], camera_bias=group["segments"][0]["camera_bias"],
+        ))
+
+    fig = build_multi_dancer_figure(slots)
+
+    total_steps = sum(len(s["energies"]) for s in slots)
+    longest = max(len(s["energies"]) for s in slots)
+    all_latencies = np.concatenate([s["latencies_ms"] for s in slots])
+    act_table = "| # | Act | Steps | Palette | Avg latency |\n|---|---|---|---|---|\n" + "\n".join(
+        f"| {i + 1} | {s['name']} | {len(s['energies'])} | {s['palette_segments'][0][0]} | "
+        f"{np.mean(s['latencies_ms']):.1f} ms |"
+        for i, s in enumerate(slots)
+    )
     report = (
-        f"**Backend:** {backend.name} — {len(actions)} imagined steps across "
-        f"{len(act_segments)} acts, {np.mean(latencies):.2f} ms/step avg predictor latency\n\n"
-        f"{act_lines}\n\n"
+        f"**Backend:** {backend.name} — {total_steps} imagined steps across "
+        f"{len(slots)} independently-staged dancers (longest single rollout: "
+        f"{longest} steps), {np.mean(all_latencies):.2f} ms/step avg predictor latency\n\n"
+        f"{act_table}\n\n"
         f"Plays once through, then loops from the top automatically -- no need to "
         f"press anything again. The **first** run compiles new TTNN kernels for every "
-        f"distinct step count in the sequence (a real one-time cost, potentially "
-        f"several minutes for a ~90-step show); every loop after that reuses the "
-        f"compiled kernels and is fast."
+        f"distinct step count any single dancer reaches (a real one-time cost, seconds "
+        f"per new length); every loop after that reuses the compiled kernels and is "
+        f"fast."
     )
     return fig, report
 
@@ -349,24 +422,24 @@ def build_app(backend):
 
     with gr.Blocks(title="V-JEPA2-AC on Blackhole") as demo:
         gr.Markdown(
-            "# 🤖 WIR SIND DIE ROBOTER\n"
-            "### V-JEPA2-AC — MENSCH-MASCHINE WELTMODELL, AUF TENSTORRENT BLACKHOLE\n"
-            f"BACKEND: **{backend.name}**. DIESES MODELL SAGT EINBETTUNGEN VORAUS, "
-            "KEINE PIXEL — alles Visuelle unten ist entweder eine echte "
-            "Korrektheitsprüfung oder ein klar gekennzeichneter imaginierter Ablauf, "
-            "niemals erzeugtes Video."
+            "# We Are The Robots\n"
+            "### V-JEPA2-AC — an action-conditioned world model, on Tenstorrent Blackhole\n"
+            f"Backend: **{backend.name}**. This model predicts *embeddings*, not pixels "
+            "— everything visual below is either a real correctness check or a clearly "
+            "labeled imagined rollout, never generated video."
         )
-        with gr.Tab("★ DIE VORFÜHRUNG // THE SHOW"):
+        with gr.Tab("★ The Show"):
             gr.Markdown(
-                "_Sieben Akte, eine durchgehende Vorführung: INSTANT KRAFTWERK → "
-                "CAREFUL WITH THAT AX, EUGENE → TANGERINE RATCHET → POPPIN AND LOCKIN → "
-                "YOUR NAME ON A GRAIN OF RICE → LASER CATS CUTTING A RUG → XOXO TT — "
-                "dann von vorne, automatisch, für immer. Jeder Akt hat seine eigene "
-                "Farbe und Kamera. Der **erste** Lauf kompiliert neue Kernels für jede "
-                "Schrittzahl in der Sequenz (Minuten, einmalig); danach ist jede "
-                "Wiederholung schnell._"
+                "_Seven acts, one continuous show: Instant Kraftwerk → Careful with "
+                "that Ax, Eugene → Tangerine Ratchet → Poppin and Lockin → Your Name "
+                "on a Grain of Rice → Laser Cats Cutting a Rug → XOXO TT — then loops "
+                "from the top, automatically, forever. Each act gets its own color, "
+                "camera, and stage spot; earlier acts stay frozen in place as later "
+                "ones take the spotlight. The **first** run compiles new kernels for "
+                "every distinct step count (a real one-time cost, seconds per length); "
+                "every loop after that is fast._"
             )
-            btn0 = gr.Button("▶ DIE VORFÜHRUNG STARTEN // START THE SHOW", variant="primary")
+            btn0 = gr.Button("▶ Start the Show", variant="primary")
             plot0 = gr.HTML(label="the show")
             report0 = gr.Markdown()
 
@@ -375,32 +448,34 @@ def build_app(backend):
                 return wrap_iframe(fig, height=620, auto_loop=True), report
 
             btn0.click(run_show_html, outputs=[plot0, report0])
-        with gr.Tab("GRUNDLAGEN-PRÜFUNG // GROUNDED CHECK"):
-            btn1 = gr.Button("SYSTEM AKTIVIEREN // RUN ON REAL CLIP", variant="primary")
+        with gr.Tab("Grounded Check"):
+            btn1 = gr.Button("Run on the Real Clip", variant="primary")
             with gr.Row():
-                img0 = gr.Image(label="BILD 0 // FRAME 0 (real)")
-                img1 = gr.Image(label="BILD 1 // FRAME 1 (real)")
-            plot1 = gr.Plot(label="FEHLERLANDSCHAFT // PREDICTION-ERROR LANDSCAPE")
+                img0 = gr.Image(label="Frame 0 (real)")
+                img1 = gr.Image(label="Frame 1 (real)")
+            plot1 = gr.Plot(label="Prediction-Error Landscape")
             report1 = gr.Markdown()
             btn1.click(lambda: run_grounded_check(backend, frames, states), outputs=[img0, img1, plot1, report1])
-        with gr.Tab("TANZEN // DANCE"):
+        with gr.Tab("Dance"):
             gr.Markdown(
-                "_Jeder Schritt wächst den Kontext um ein Bild -- Schritt N hat eine "
-                "andere Sequenzlänge als Schritt N-1, also kompiliert das "
-                "Blackhole-Backend beim **ersten** Lauf neue Kernels für JEDEN "
-                "Schrittindex 1..N separat (Sekunden pro neuer Länge, nicht einmalig "
-                "insgesamt) -- eine 30-Schritt-Choreografie kann beim ersten Mal "
-                "mehrere Minuten dauern. Danach sind alle diese Längen im "
-                "TTNN-Kernel-Cache und wiederholte Läufe sind schnell. Kurz anfangen, "
-                "dann verlängern._\n\n"
-                f"**BEKANNTE SCHRITTE // KNOWN MOVES:** {', '.join(MOVES)}"
+                "_Every step grows the context by one frame -- step N is a different "
+                "sequence length than step N-1, so the Blackhole backend compiles new "
+                "kernels for EACH step index 1..N separately on the **first** run "
+                "(seconds per new length, not a one-time total) -- a 30-step "
+                "choreography can take a few minutes the first time. After that, "
+                "every one of those lengths is in the TTNN kernel cache and repeat "
+                "runs are fast. Start short, then lengthen it._\n\n"
+                "| Move | What it does |\n|---|---|\n" + "\n".join(
+                    f"| **{name}** | {' '.join(fn.__doc__.split(' -- ', 1)[-1].split()).split('. ')[0].rstrip('.')} |"
+                    for name, fn in MOVES.items()
+                )
             )
             sequence = gr.Textbox(
-                value="ACHT SPIN VERBEUGUNG",
-                label="CHOREOGRAFIE // CHOREOGRAPHY (move names, space-separated, repeats allowed)",
+                value="FIGURE8 SPIN BOW",
+                label="Choreography (move names, space-separated, repeats allowed)",
             )
-            steps_per_move = gr.Slider(3, 10, value=4, step=1, label="SCHRITTE PRO BEWEGUNG // STEPS PER MOVE")
-            btn2 = gr.Button("TANZ BERECHNEN // COMPUTE DANCE", variant="primary")
+            steps_per_move = gr.Slider(3, 10, value=4, step=1, label="Steps per Move")
+            btn2 = gr.Button("Compute Dance", variant="primary")
             # gr.Plot never calls Plotly.addFrames (Play button/slider render but do
             # nothing -- see the earlier fix). gr.HTML looked like the answer since
             # fig.to_html() DOES include that call, but gr.HTML renders via Svelte's
@@ -421,20 +496,20 @@ def build_app(backend):
                 return wrap_iframe(fig, height=580, auto_loop=True), report
 
             btn2.click(run_choreography_html, inputs=[sequence, steps_per_move], outputs=[plot2, report2])
-        with gr.Tab("PLANEN // CEM PLANNING"):
+        with gr.Tab("CEM Planning"):
             gr.Markdown(
-                "_Statt einer festen Bewegung sucht hier ein echter CEM-Optimierer "
-                "(portiert von Metas eigenem `mpc_utils.cem`) iterativ nach der Aktion, "
-                "die Bild 1 aus Bild 0 am besten vorhersagt -- und vergleicht das "
-                "Ergebnis mit der tatsächlich aufgezeichneten Aktion._"
+                "_Instead of a scripted move, a real CEM optimizer (ported from Meta's "
+                "own `mpc_utils.cem`) iteratively searches for the action that best "
+                "predicts frame 1 from frame 0 -- then compares what it found against "
+                "the action that was actually recorded._"
             )
             with gr.Row():
-                cem_steps = gr.Slider(2, 15, value=6, step=1, label="CEM-ITERATIONEN // CEM ITERATIONS")
-                cem_samples = gr.Slider(4, 32, value=12, step=1, label="STICHPROBEN // SAMPLES / ITERATION")
-                cem_topk = gr.Slider(2, 12, value=4, step=1, label="TOP-K")
-                cem_maxnorm = gr.Slider(0.02, 0.15, value=0.12, step=0.01, label="SUCHRADIUS // SEARCH RADIUS (maxnorm, m)")
-            btn3 = gr.Button("CEM STARTEN // RUN CEM", variant="primary")
-            plot3 = gr.Plot(label="CEM-KONVERGENZ // CEM CONVERGENCE")
+                cem_steps = gr.Slider(2, 15, value=6, step=1, label="CEM Iterations")
+                cem_samples = gr.Slider(4, 32, value=12, step=1, label="Samples / Iteration")
+                cem_topk = gr.Slider(2, 12, value=4, step=1, label="Top-K")
+                cem_maxnorm = gr.Slider(0.02, 0.15, value=0.12, step=0.01, label="Search Radius (maxnorm, m)")
+            btn3 = gr.Button("Run CEM", variant="primary")
+            plot3 = gr.Plot(label="CEM Convergence")
             report3 = gr.Markdown()
             btn3.click(lambda *a: run_cem_plan(backend, frames, states, *a),
                        inputs=[cem_steps, cem_samples, cem_topk, cem_maxnorm], outputs=[plot3, report3])
@@ -457,7 +532,7 @@ def main():
 
     demo = build_app(backend)
     try:
-        demo.launch(share=args.share, theme=gr.themes.Base(primary_hue="red"), css=KRAFTWERK_CSS)
+        demo.launch(share=args.share, theme=gr.themes.Base(primary_hue="pink", neutral_hue="gray"), css=TT_BRAND_CSS)
     finally:
         if hasattr(backend, "close"):
             backend.close()
