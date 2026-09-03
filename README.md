@@ -76,17 +76,18 @@ on real checkpoint weights):
 ## Requirements
 
 - A [tt-metal](https://github.com/tenstorrent/tt-metal) checkout with `ttnn` built —
-  needed by everything except `cpu_benchmark.py`
+  needed by everything except `cpu_benchmark.py` and the Gradio app in `--backend reference` mode
 - A clone of the reference implementation at the repo root — needed by the correctness
-  tests and `cpu_benchmark.py`, not by `benchmark.py`/`profile_run.py`
-- Tenstorrent Blackhole hardware — needed by everything except `cpu_benchmark.py`
+  tests, `cpu_benchmark.py`, and the Gradio app, not by `benchmark.py`/`profile_run.py`
+- Tenstorrent Blackhole hardware — needed by everything except `cpu_benchmark.py` and
+  the Gradio app in `--backend reference` mode
 - The stripped checkpoint (see above) at a path of your choosing
 
 ## Running
 
 ```bash
 git clone https://github.com/facebookresearch/vjepa2 reference
-export TT_METAL_HOME=/path/to/tt-metal   # not needed for cpu_benchmark.py
+export TT_METAL_HOME=/path/to/tt-metal   # not needed for cpu_benchmark.py or --backend reference
 
 mkdir -p ~/.cache/vjepa2
 cp /path/to/vjepa2-ac-vitg.inference.pt ~/.cache/vjepa2/  # matches the CKPT_PATH each script hardcodes
@@ -97,6 +98,32 @@ python tt/test_functional_predictor.py
 python tt/benchmark.py
 python tt/cpu_benchmark.py
 ```
+
+## Gradio demo
+
+```bash
+pip install gradio plotly scipy
+python gradio_app/app.py --backend ttnn        # real Blackhole hardware (default)
+python gradio_app/app.py --backend reference   # CPU, no tt-metal/hardware needed
+```
+
+Three tabs, all clearly labeled real-vs-imagined (the model predicts embeddings, never
+pixels or joint angles):
+
+- **Grounded prediction check** — predicts the real second frame of Meta's own example
+  clip from the first + the actual recorded action, compares to ground truth, and
+  sweeps a small action grid (same methodology as Meta's own
+  `energy_landscape_example.ipynb`) to show the real action sitting near the
+  low-error point.
+- **Make it dance** — chains named move primitives (`moves.py`: `WELLE`, `SPIN`,
+  `VERBEUGUNG`, `SCHNAPP`, `ACHT`) into a choreography, played out via the same
+  imagination-rollout chaining Meta's own CEM planner uses to evaluate candidate
+  futures. A 2-link end-effector arm animates the result (see `robot_viz.py` for the
+  tt-toplike-inspired color law and the forward-kinematics caveats).
+- **CEM planning** — a real port of Meta's own Cross-Entropy Method optimizer
+  (`planning.py`), iteratively searching for the action that best predicts the real
+  frame 1 from frame 0, then reporting how close it converges to the action that was
+  actually taken.
 
 ## License
 
