@@ -17,9 +17,16 @@ small shared utilities (`models.common.lightweightmodule`,
 8 frames @ 256px → 1024 context tokens → predictor → 1024 predicted tokens, traced-replay
 latency on a single Blackhole chip:
 
-| | latency | throughput |
-|---|---|---|
-| encoder + predictor, combined | 120.7 ms/forward | 66.3 input-frames/s |
+| | latency | throughput | relative |
+|---|---|---|---|
+| Blackhole (TTNN, bf16-mixed, traced-replay) | 120.7 ms/forward | 66.3 input-frames/s | 1x |
+| same machine's CPU, reference PyTorch (AMD Ryzen 7 9700X, 8c/16t, fp32 eager) | 4293.2 ms/forward | 1.86 input-frames/s | ~35.6x slower |
+
+The CPU number is the unmodified `facebookresearch/vjepa2` reference implementation run
+on the same host, same weights, same input shape — not a different framework's
+optimized inference path, and not a GPU (none was available to benchmark against). Take
+it as "how much faster than not having a Blackhole," not as a claim about GPU-class
+hardware.
 
 Correctness (PCC against the reference `facebookresearch/vjepa2` implementation, fp32,
 on real checkpoint weights):
@@ -36,7 +43,9 @@ on real checkpoint weights):
 - `tt/functional_predictor.py` — action/state conditioning, frame-causal AC predictor
 - `tt/test_functional_encoder.py`, `tt/test_full_encoder.py`, `tt/test_functional_predictor.py` —
   PCC correctness checks against the reference implementation
-- `tt/benchmark.py` — traced-replay end-to-end latency/throughput
+- `tt/benchmark.py` — traced-replay end-to-end latency/throughput on Blackhole
+- `tt/cpu_benchmark.py` — the same shape/methodology run through the unmodified
+  reference PyTorch implementation, for the CPU comparison above
 - `tt/profile_run.py` — per-op device-time breakdown via Tracy/`tt-perf-report`
 - `scripts/strip_checkpoint.py` — shrinks the official 11GB training checkpoint down to
   a ~2.6GB bf16 inference-only one (same weights, smaller download — see the script's
@@ -66,24 +75,27 @@ on real checkpoint weights):
 
 ## Requirements
 
-- A [tt-metal](https://github.com/tenstorrent/tt-metal) checkout with `ttnn` built, on
-  `PYTHONPATH` (or run from inside a tt-metal worktree)
-- Tenstorrent Blackhole hardware
+- A [tt-metal](https://github.com/tenstorrent/tt-metal) checkout with `ttnn` built —
+  needed by everything except `cpu_benchmark.py`
+- A clone of the reference implementation at the repo root — needed by the correctness
+  tests and `cpu_benchmark.py`, not by `benchmark.py`/`profile_run.py`
+- Tenstorrent Blackhole hardware — needed by everything except `cpu_benchmark.py`
 - The stripped checkpoint (see above) at a path of your choosing
 
 ## Running
 
-Each script hardcodes `CKPT_PATH = "/home/ttuser/.cache/vjepa2/vjepa2-ac-vitg.inference.pt"`
-at the top — either edit that constant or put your checkpoint at that path:
-
 ```bash
+git clone https://github.com/facebookresearch/vjepa2 reference
+export TT_METAL_HOME=/path/to/tt-metal   # not needed for cpu_benchmark.py
+
 mkdir -p ~/.cache/vjepa2
-cp /path/to/vjepa2-ac-vitg.inference.pt ~/.cache/vjepa2/
+cp /path/to/vjepa2-ac-vitg.inference.pt ~/.cache/vjepa2/  # matches the CKPT_PATH each script hardcodes
 
 python tt/test_functional_encoder.py
 python tt/test_full_encoder.py
 python tt/test_functional_predictor.py
 python tt/benchmark.py
+python tt/cpu_benchmark.py
 ```
 
 ## License

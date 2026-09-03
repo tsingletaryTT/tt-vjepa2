@@ -8,6 +8,7 @@ PCC >= 0.995 is the acceptance bar (ttm-functional-decoder's default), even thou
 is an encoder not a decoder -- the bar itself doesn't depend on causal-vs-bidirectional.
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -15,13 +16,18 @@ import torch
 
 import ttnn
 
-AUTOPORT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(AUTOPORT / "reference"))
+# Requires: `git clone https://github.com/facebookresearch/vjepa2 reference` at the repo
+# root, and TT_METAL_HOME set to a tt-metal checkout (for `ttnn` + `models.common.*`).
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "reference"))
 
 from src.models.utils.modules import Block  # noqa: E402
 
-sys.path.insert(0, str(AUTOPORT.parent.parent.parent))  # tt-metal-shaped root, for `models.*`
-sys.path.insert(0, str(AUTOPORT))  # AUTOPORT/tt/ is the "tt" package itself
+TT_METAL_HOME = os.environ.get("TT_METAL_HOME")
+if not TT_METAL_HOME:
+    raise RuntimeError("Set TT_METAL_HOME to a tt-metal checkout before running this script.")
+sys.path.insert(0, TT_METAL_HOME)
+sys.path.insert(0, str(REPO_ROOT))  # REPO_ROOT/tt/ is the "tt" package itself
 
 from tt.functional_encoder import (  # noqa: E402
     EncoderBlock,

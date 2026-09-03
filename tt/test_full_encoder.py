@@ -6,6 +6,7 @@ real (stripped) checkpoint weights. Same small synthetic clip as the single-bloc
 (fast iteration); scaling to the full advertised 64-frame/384px clip is the next stage,
 not this one -- this stage proves the block stack composes correctly end to end."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -13,13 +14,18 @@ import torch
 
 import ttnn
 
-AUTOPORT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(AUTOPORT / "reference"))
+# Requires: `git clone https://github.com/facebookresearch/vjepa2 reference` at the repo
+# root, and TT_METAL_HOME set to a tt-metal checkout (for `ttnn` + `models.common.*`).
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "reference"))
 
 from src.models.vision_transformer import VisionTransformer  # noqa: E402
 
-sys.path.insert(0, str(AUTOPORT.parent.parent.parent))
-sys.path.insert(0, str(AUTOPORT))  # AUTOPORT/tt/ is the "tt" package itself
+TT_METAL_HOME = os.environ.get("TT_METAL_HOME")
+if not TT_METAL_HOME:
+    raise RuntimeError("Set TT_METAL_HOME to a tt-metal checkout before running this script.")
+sys.path.insert(0, TT_METAL_HOME)
+sys.path.insert(0, str(REPO_ROOT))  # REPO_ROOT/tt/ is the "tt" package itself
 
 from tt.functional_encoder import VJEPA2Encoder, VJEPA2EncoderConfig  # noqa: E402
 from tt.test_functional_encoder import CKPT_PATH, pcc  # noqa: E402

@@ -7,6 +7,7 @@ actions/states (not the encoder's actual output) -- isolates predictor correctne
 encoder correctness, per ttm-functional-decoder's "prefer a layer-only HF reference" guidance
 generalized to "prefer a component-only reference before chaining the whole model"."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -14,12 +15,17 @@ import torch
 
 import ttnn
 
-AUTOPORT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(AUTOPORT / "reference"))
+# Requires: `git clone https://github.com/facebookresearch/vjepa2 reference` at the repo
+# root, and TT_METAL_HOME set to a tt-metal checkout (for `ttnn` + `models.common.*`).
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "reference"))
 from src.models.ac_predictor import VisionTransformerPredictorAC  # noqa: E402
 
-sys.path.insert(0, str(AUTOPORT.parent.parent.parent))
-sys.path.insert(0, str(AUTOPORT))  # AUTOPORT/tt/ is the "tt" package itself
+TT_METAL_HOME = os.environ.get("TT_METAL_HOME")
+if not TT_METAL_HOME:
+    raise RuntimeError("Set TT_METAL_HOME to a tt-metal checkout before running this script.")
+sys.path.insert(0, TT_METAL_HOME)
+sys.path.insert(0, str(REPO_ROOT))  # REPO_ROOT/tt/ is the "tt" package itself
 from tt.functional_predictor import VJEPA2Predictor, VJEPA2PredictorConfig  # noqa: E402
 from tt.test_functional_encoder import CKPT_PATH, pcc  # noqa: E402
 
