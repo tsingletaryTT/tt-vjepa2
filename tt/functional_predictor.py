@@ -312,10 +312,22 @@ class VJEPA2Predictor(LightweightModule):
     def get_rope_and_mask(self, gT: int, gH: int, gW: int) -> tuple:
         """Built once per (gT,gH,gW) and cached, same reasoning as the encoder's
         `get_rope_tables`: these depend only on grid shape, not on input content, so
-        rebuilding them inside a traced/replayed loop is a pointless repeated allocation."""
+        rebuilding them inside a traced/replayed loop is a pointless repeated allocation.
+
+        Bounded to a handful of entries: `attn_mask` is O((gT*HW)^2) and a caller doing
+        an ever-growing-context rollout (e.g. the imagination-rollout demo, which visits
+        a new, never-repeated gT every step) would otherwise accumulate one such mask
+        PER STEP, permanently, for the life of this object -- found the hard way via a
+        DRAM OOM roughly 60-70 distinct shapes into a long rollout. A fixed-shape caller
+        (benchmark.py's traced replay) only ever uses one key, so this cap changes
+        nothing for it."""
         key = (gT, gH, gW)
         if not hasattr(self, "_rope_mask_cache"):
             self._rope_mask_cache = {}
+        _MAX_CACHE_ENTRIES = 2
+        if key not in self._rope_mask_cache and len(self._rope_mask_cache) >= _MAX_CACHE_ENTRIES:
+            oldest_key = next(iter(self._rope_mask_cache))
+            del self._rope_mask_cache[oldest_key]
         if key not in self._rope_mask_cache:
             # bf16, matching q/k/scores inside ACRoPEAttention (derived from bf16 qkv
             # weight), not `self.dtype` (the fp32 residual-stream dtype).

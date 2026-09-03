@@ -72,6 +72,182 @@ def step_color(step_idx: int, n_steps: int, energy: float, energy_ref: float,
     return f"rgb({int(r * 255)},{int(g * 255)},{int(b * 255)})"
 
 
+def step_color_palette(step_idx: int, n_steps: int, energy: float, energy_ref: float,
+                        latency_ms: float, latency_ref_ms: float, palette: str = "red") -> str:
+    """Same tt-toplike HSV law (real signals drive hue/saturation/value), but with a
+    per-act palette instead of always red -- 'red everywhere' reads as one loud tone,
+    not six distinct acts. Each palette still ties at least one channel to a real
+    per-step signal (energy or latency); only 'flash' is a deliberate, momentary
+    exception (the one dramatic beat that's meant to read as maxed-out, not measured)."""
+    energy_norm = float(np.clip(energy / max(energy_ref, 1e-6), 0.0, 1.0))
+    latency_norm = float(np.clip(latency_ms / max(latency_ref_ms, 1e-6), 0.0, 1.5) / 1.5)
+    if palette == "tangerine":
+        hue, saturation = 0.07, float(np.clip(0.2 + 0.8 * energy_norm, 0.0, 1.0))
+        value = float(np.clip(0.55 + 0.45 * latency_norm, 0.55, 1.0))
+    elif palette == "cool":
+        hue, saturation = 0.56, 0.55
+        value = float(np.clip(0.22 + 0.55 * energy_norm, 0.2, 0.85))
+    elif palette == "flash":
+        hue, saturation, value = 0.0, 1.0, 1.0
+    elif palette == "micro":
+        hue, saturation = 0.5, 0.08
+        value = float(np.clip(0.45 + 0.3 * energy_norm, 0.4, 0.8))
+    elif palette == "rainbow":
+        hue, saturation = (step_idx / max(n_steps - 1, 1)) % 1.0, 1.0
+        value = float(np.clip(0.55 + 0.45 * latency_norm, 0.55, 1.0))
+    else:  # "red" (default / Instant Kraftwerk / Poppin and Lockin)
+        hue, saturation = 0.0, float(np.clip(0.15 + 0.85 * energy_norm, 0.0, 1.0))
+        value = float(np.clip(0.55 + 0.45 * latency_norm, 0.55, 1.0))
+    r, g, b = colorsys.hsv_to_rgb(hue, saturation, value)
+    return f"rgb({int(r * 255)},{int(g * 255)},{int(b * 255)})"
+
+
+def build_show_figure(poses: np.ndarray, energies: np.ndarray, latencies_ms: np.ndarray,
+                       pen_up: np.ndarray, labels: list, act_segments: list,
+                       base: np.ndarray | None = None, l1: float = 0.28, l2: float = 0.28):
+    """Like build_dance_figure, but for a multi-act show: per-act palette (via
+    step_color_palette), per-act camera framing ("always show the best stuff" --
+    recentered and reframed per act instead of one fixed angle for everything), a live
+    data HUD (act name, step, energy, latency) as an animated annotation, and trail
+    gaps at pen-up jumps (so e.g. the XOXO TT letters don't smear into one scribble).
+
+    `pen_up[i]` / `labels[i]` describe the action that produced poses[i+1] from
+    poses[i] (so len(pen_up) == len(labels) == len(poses) - 1 == len(energies)).
+    `act_segments`: [{name, start, end, palette, zoom, camera_bias}, ...] in the same
+    action-index space as pen_up/labels/energies."""
+    import plotly.graph_objects as go
+
+    n_steps = len(poses)
+    energy_ref = float(np.max(energies)) if len(energies) else 1.0
+    latency_ref = float(np.median(latencies_ms)) if len(latencies_ms) else 1.0
+
+    positions = poses[:, :3]
+    if base is None:
+        direction = np.array([-1.0, 0.0, -0.15])
+        direction = direction / np.linalg.norm(direction)
+        base = positions[0] + direction * (l1 + l2) * 0.6
+
+    margin = 0.15
+    bbox_min = np.minimum(positions.min(axis=0), base) - margin
+    bbox_max = np.maximum(positions.max(axis=0), base) + margin
+    half_range = max((bbox_max - bbox_min).max() / 2, 0.2)
+    center = (bbox_min + bbox_max) / 2
+    axis_ranges = {
+        "x": [center[0] - half_range, center[0] + half_range],
+        "y": [center[1] - half_range, center[1] + half_range],
+        "z": [max(center[2] - half_range, 0.0), center[2] + half_range],
+    }
+
+    def act_for_step(i):
+        for seg in act_segments:
+            if seg["start"] <= i < seg["end"]:
+                return seg
+        return act_segments[-1]
+
+    # Per-act camera: recenter on that act's own mean position (normalized into the
+    # same -1..1-ish frame the global axis_ranges imply), then look from camera_bias
+    # scaled by zoom -- a tight zoom for the grain-of-rice close-up, a wide dramatic
+    # angle for the axe-swing, etc.
+    def camera_for_seg(seg):
+        lo, hi = seg["start"], min(seg["end"] + 1, len(poses))
+        seg_center = positions[lo:hi].mean(axis=0)
+        norm_center = (seg_center - center) / half_range
+        offset = np.array(seg["camera_bias"]) * (seg["zoom"] / 1.5)
+        # Plotly's camera is degenerate at very small eye-to-center distances (near-field
+        # distortion -- geometry stretches wildly, as if the lens were inside the
+        # subject). A low `zoom` should read as "close up", not "camera clipping through
+        # the arm", so floor the offset's magnitude before it gets that small.
+        min_dist = 0.75
+        dist = np.linalg.norm(offset)
+        if dist < min_dist:
+            offset = offset / (dist + 1e-9) * min_dist
+        eye = norm_center + offset
+        return dict(center=dict(x=float(norm_center[0]), y=float(norm_center[1]), z=float(norm_center[2])),
+                    eye=dict(x=float(eye[0]), y=float(eye[1]), z=float(eye[2])),
+                    up=dict(x=0, y=0, z=1))
+
+    trail_x, trail_y, trail_z = [positions[0, 0]], [positions[0, 1]], [positions[0, 2]]
+    frames = []
+    for i, pose in enumerate(poses):
+        pos = pose[:3]
+        if i > 0:
+            if pen_up[i - 1]:
+                trail_x.append(None); trail_y.append(None); trail_z.append(None)
+            trail_x.append(pos[0]); trail_y.append(pos[1]); trail_z.append(pos[2])
+
+        action_idx = max(i - 1, 0)
+        seg = act_for_step(action_idx)
+        elbow = two_link_elbow(base, pos, l1, l2)
+        gripper_open = 1.0 - pose[6]
+        color = step_color_palette(
+            i, n_steps,
+            energy=energies[i - 1] if i > 0 else 0.0, energy_ref=energy_ref,
+            latency_ms=latencies_ms[i - 1] if i > 0 else latency_ref, latency_ref_ms=latency_ref,
+            palette=seg["palette"],
+        )
+        marker_size = 10 + 14 * gripper_open
+
+        arm_trace = go.Scatter3d(
+            x=[base[0], elbow[0], pos[0]], y=[base[1], elbow[1], pos[1]], z=[base[2], elbow[2], pos[2]],
+            mode="lines+markers", line=dict(color=color, width=10),
+            marker=dict(size=[6, 8, marker_size], color=color), showlegend=False,
+        )
+        trail_trace = go.Scatter3d(
+            x=list(trail_x), y=list(trail_y), z=list(trail_z), mode="lines",
+            line=dict(color="rgba(200,200,200,0.3)", width=3), showlegend=False,
+        )
+        label = labels[action_idx] if action_idx < len(labels) else seg["name"]
+        energy_val = energies[i - 1] if i > 0 else 0.0
+        latency_val = latencies_ms[i - 1] if i > 0 else latency_ref
+        hud_text = (
+            f"{seg['name']}<br>"
+            f"SCHRITT {action_idx + 1}/{n_steps - 1} &nbsp;·&nbsp; {label}<br>"
+            f"ENERGIE {energy_val:.3f} &nbsp;·&nbsp; {latency_val:.1f} ms"
+        )
+        frame_layout = go.Layout(
+            scene_camera=camera_for_seg(seg),
+            annotations=[dict(
+                text=hud_text, xref="paper", yref="paper", x=0.02, y=0.98,
+                showarrow=False, align="left", font=dict(family="'Orbitron', monospace", size=13, color=color),
+                bgcolor="rgba(0,0,0,0.55)", bordercolor=color, borderwidth=1,
+            )],
+        )
+        frames.append(go.Frame(data=[arm_trace, trail_trace], name=str(i), layout=frame_layout))
+
+    grid_axis = dict(gridcolor="#333333", zerolinecolor="#555555", color="#dddddd",
+                      showbackground=True, backgroundcolor="#000000")
+    fig = go.Figure(data=frames[0].data, layout=frames[0].layout, frames=frames)
+    fig.update_layout(
+        template="plotly_dark",
+        font=dict(family="'Orbitron', 'Michroma', monospace", color="#ff2b2b"),
+        scene=dict(
+            xaxis=dict(range=axis_ranges["x"], title="x", **grid_axis),
+            yaxis=dict(range=axis_ranges["y"], title="y", **grid_axis),
+            zaxis=dict(range=axis_ranges["z"], title="z", **grid_axis),
+            aspectmode="cube",
+            bgcolor="#000000",
+        ),
+        paper_bgcolor="#000000",
+        plot_bgcolor="#000000",
+        margin=dict(l=0, r=0, t=30, b=0),
+        height=600,
+        updatemenus=[dict(
+            type="buttons", showactive=False, bgcolor="#1a0000", font=dict(color="#ff2b2b"),
+            buttons=[dict(label="▶ DIE VORFÜHRUNG // START THE SHOW", method="animate",
+                          args=[None, {"frame": {"duration": 220, "redraw": True},
+                                       "transition": {"duration": 0}, "fromcurrent": True}])],
+        )],
+        sliders=[dict(
+            font=dict(color="#ff2b2b"), bgcolor="#000000", activebgcolor="#ff2b2b",
+            currentvalue=dict(prefix="SCHRITT / STEP: ", font=dict(color="#ff2b2b")),
+            steps=[dict(method="animate", args=[[str(i)], {"mode": "immediate",
+                        "frame": {"duration": 0, "redraw": True}, "transition": {"duration": 0}}],
+                        label=str(i)) for i in range(n_steps)],
+        )],
+    )
+    return fig
+
+
 def build_dance_figure(poses: np.ndarray, energies: np.ndarray, latencies_ms: np.ndarray,
                         base: np.ndarray | None = None, l1: float = 0.28, l2: float = 0.28):
     """poses: [N,7] end-effector poses (from integrate_pose). energies: [N-1] per-step

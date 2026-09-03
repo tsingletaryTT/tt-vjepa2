@@ -39,9 +39,48 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from moves import MOVES, build_choreography  # noqa: E402
+from moves import MOVES, build_choreography, build_show  # noqa: E402
 from planning import cem_search  # noqa: E402
-from robot_viz import build_dance_figure, integrate_pose  # noqa: E402
+from robot_viz import build_dance_figure, build_show_figure, integrate_pose  # noqa: E402
+
+# Injected into the iframe's own document (not the outer Gradio page) after the
+# figure's HTML: polls until Plotly.addFrames has actually populated frames (rather
+# than assuming a fixed ordering against the newPlot(...).then(addFrames) promise
+# chain already in fig.to_html()'s output), then plays once and replays from the start
+# every time the animation finishes -- turning "click generate, watch once, stop" into
+# a show that runs until the tab is closed.
+AUTO_LOOP_SCRIPT = """
+<script>
+(function() {
+  function tryPlay() {
+    var gd = document.querySelector('.js-plotly-plot');
+    if (!gd || !gd._transitionData || !gd._transitionData._frames || !gd._transitionData._frames.length) {
+      setTimeout(tryPlay, 150);
+      return;
+    }
+    function playForward() {
+      Plotly.animate(gd, null, {frame: {duration: 220, redraw: true}, transition: {duration: 0}, mode: 'immediate'});
+    }
+    function restart() {
+      // Two things Plotly needs here, found the hard way: (1) Plotly.animate(gd, null,
+      // ...) after already reaching the last frame does not reliably restart from the
+      // top on its own -- explicitly seek back to frame '0' first, the same call the
+      // slider itself makes. (2) calling Plotly.animate() again SYNCHRONOUSLY from
+      // inside its own 'plotly_animated' completion handler throws an internal
+      // re-entrancy rejection (Plotly hasn't finished settling the previous call's
+      // state yet) -- deferring one tick with setTimeout lets that settle first.
+      setTimeout(function() {
+        Plotly.animate(gd, ['0'], {frame: {duration: 0, redraw: true}, transition: {duration: 0}, mode: 'immediate'})
+          .then(function() { setTimeout(playForward, 50); });
+      }, 50);
+    }
+    gd.on('plotly_animated', restart);
+    playForward();
+  }
+  tryPlay();
+})();
+</script>
+"""
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE_TRAJ = REPO_ROOT / "reference" / "notebooks" / "franka_example_traj.npz"
@@ -263,6 +302,48 @@ def run_choreography(backend, frames: np.ndarray, states: np.ndarray, sequence: 
     return fig, report
 
 
+def run_show(backend, frames: np.ndarray, states: np.ndarray):
+    """The full seven-act show (moves.build_show): INSTANT KRAFTWERK, Careful with
+    that Ax Eugene, Tangerine Ratchet, Poppin and Lockin, Your Name on a Grain of Rice,
+    Laser Cats Cutting a Rug, and the XOXO TT finale -- one continuous rollout, with
+    per-act palette/camera framing baked into the figure by robot_viz.build_show_figure.
+    Returns (plotly animated figure, markdown report)."""
+    actions, pen_up, labels, act_segments = build_show()
+    start_pose = states[0].copy()
+    poses, energies, latencies = imagination_rollout(backend, frames[0], start_pose, actions)
+    fig = build_show_figure(poses, energies, latencies, pen_up, labels, act_segments)
+
+    act_lines = "\n".join(f"- **{seg['name']}**: steps {seg['start']}–{seg['end']} ({seg['palette']})"
+                           for seg in act_segments)
+    report = (
+        f"**Backend:** {backend.name} — {len(actions)} imagined steps across "
+        f"{len(act_segments)} acts, {np.mean(latencies):.2f} ms/step avg predictor latency\n\n"
+        f"{act_lines}\n\n"
+        f"Plays once through, then loops from the top automatically -- no need to "
+        f"press anything again. The **first** run compiles new TTNN kernels for every "
+        f"distinct step count in the sequence (a real one-time cost, potentially "
+        f"several minutes for a ~90-step show); every loop after that reuses the "
+        f"compiled kernels and is fast."
+    )
+    return fig, report
+
+
+def wrap_iframe(fig, height: int = 600, auto_loop: bool = False) -> str:
+    """Wraps a plotly Figure as a self-contained <iframe srcdoc="...">, with the
+    Orbitron import carried along (the iframe's document doesn't inherit the outer
+    page's <head>). See the TANZEN tab's original comment for why an iframe is needed
+    at all instead of gr.Plot/gr.HTML directly. `auto_loop` appends AUTO_LOOP_SCRIPT so
+    the animation restarts itself forever instead of stopping after one pass."""
+    doc = fig.to_html(full_html=True, include_plotlyjs="cdn")
+    doc = doc.replace("<head>", f"<head><style>{KRAFTWERK_FONT_IMPORT} body{{margin:0}}</style>", 1)
+    if auto_loop:
+        doc = doc.replace("</body>", AUTO_LOOP_SCRIPT + "</body>", 1)
+    return (
+        f'<iframe srcdoc="{html_lib.escape(doc, quote=True)}" '
+        f'style="width:100%;height:{height}px;border:none;background:#000000;"></iframe>'
+    )
+
+
 def build_app(backend):
     frames, states = load_example()
 
@@ -275,6 +356,25 @@ def build_app(backend):
             "Korrektheitsprüfung oder ein klar gekennzeichneter imaginierter Ablauf, "
             "niemals erzeugtes Video."
         )
+        with gr.Tab("★ DIE VORFÜHRUNG // THE SHOW"):
+            gr.Markdown(
+                "_Sieben Akte, eine durchgehende Vorführung: INSTANT KRAFTWERK → "
+                "CAREFUL WITH THAT AX, EUGENE → TANGERINE RATCHET → POPPIN AND LOCKIN → "
+                "YOUR NAME ON A GRAIN OF RICE → LASER CATS CUTTING A RUG → XOXO TT — "
+                "dann von vorne, automatisch, für immer. Jeder Akt hat seine eigene "
+                "Farbe und Kamera. Der **erste** Lauf kompiliert neue Kernels für jede "
+                "Schrittzahl in der Sequenz (Minuten, einmalig); danach ist jede "
+                "Wiederholung schnell._"
+            )
+            btn0 = gr.Button("▶ DIE VORFÜHRUNG STARTEN // START THE SHOW", variant="primary")
+            plot0 = gr.HTML(label="the show")
+            report0 = gr.Markdown()
+
+            def run_show_html():
+                fig, report = run_show(backend, frames, states)
+                return wrap_iframe(fig, height=620, auto_loop=True), report
+
+            btn0.click(run_show_html, outputs=[plot0, report0])
         with gr.Tab("GRUNDLAGEN-PRÜFUNG // GROUNDED CHECK"):
             btn1 = gr.Button("SYSTEM AKTIVIEREN // RUN ON REAL CLIP", variant="primary")
             with gr.Row():
@@ -318,13 +418,7 @@ def build_app(backend):
                 fig, report = run_choreography(backend, frames, states, *a)
                 if fig is None:
                     return "", report
-                doc = fig.to_html(full_html=True, include_plotlyjs="cdn")
-                doc = doc.replace("<head>", f"<head><style>{KRAFTWERK_FONT_IMPORT} body{{margin:0}}</style>", 1)
-                iframe = (
-                    f'<iframe srcdoc="{html_lib.escape(doc, quote=True)}" '
-                    'style="width:100%;height:580px;border:none;background:#000000;"></iframe>'
-                )
-                return iframe, report
+                return wrap_iframe(fig, height=580, auto_loop=True), report
 
             btn2.click(run_choreography_html, inputs=[sequence, steps_per_move], outputs=[plot2, report2])
         with gr.Tab("PLANEN // CEM PLANNING"):
