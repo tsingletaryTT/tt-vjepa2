@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>V-JEPA2-AC on Blackhole</title>
+<meta name="description" content="A world model that predicts embeddings, not pixels, running on Tenstorrent Blackhole — the bring-up story, the benchmarks, and a dancing robot arm.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #092221;
+    --bg-alt: #0d2f2d;
+    --card: #0f3634;
+    --border: #1c4a47;
+    --text: #eef7f6;
+    --text-dim: #a9c4c1;
+    --accent: #74C5DF;
+    --accent-strong: #1B8EB1;
+    --yellow: #F6BC42;
+    --coral: #FF9E8A;
+    --orange: #FA512E;
+    --green: #6FABA0;
+    --mono: 'IBM Plex Mono', monospace;
+    --display: 'Fraunces', serif;
+    --body: 'IBM Plex Sans', sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--body);
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  img { max-width: 100%; display: block; }
+  a { color: var(--accent); }
+  a:hover { color: var(--accent-strong); }
+
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px; }
+
+  header.hero {
+    padding: 96px 0 72px;
+    background:
+      radial-gradient(ellipse 900px 500px at 20% -10%, rgba(116,197,223,0.16), transparent),
+      radial-gradient(ellipse 700px 400px at 90% 0%, rgba(250,81,46,0.10), transparent);
+    border-bottom: 1px solid var(--border);
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    font-size: 0.78rem;
+    color: var(--accent);
+    margin: 0 0 18px;
+  }
+  h1.title {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(2.4rem, 5.5vw, 4rem);
+    line-height: 1.05;
+    margin: 0 0 20px;
+    text-wrap: balance;
+    color: var(--text);
+  }
+  h1.title em {
+    font-style: italic;
+    color: var(--accent);
+  }
+  p.lede {
+    font-size: 1.2rem;
+    color: var(--text-dim);
+    max-width: 640px;
+    margin: 0 0 32px;
+  }
+  .cta-row { display: flex; gap: 14px; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 22px;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 0.95rem;
+    text-decoration: none;
+    border: 1px solid transparent;
+  }
+  .btn.primary { background: var(--accent-strong); color: #04120f; }
+  .btn.primary:hover { background: var(--accent); color: #04120f; }
+  .btn.ghost { border-color: var(--border); color: var(--text); }
+  .btn.ghost:hover { border-color: var(--accent); color: var(--accent); }
+
+  main { padding: 8px 0 40px; }
+  section { padding: 64px 0; border-bottom: 1px solid var(--border); }
+  section:last-of-type { border-bottom: none; }
+
+  h2.section-title {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: clamp(1.7rem, 3.4vw, 2.3rem);
+    margin: 0 0 8px;
+    text-wrap: balance;
+  }
+  p.section-kicker {
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 0.72rem;
+    color: var(--text-dim);
+    margin: 0 0 14px;
+  }
+  section > p, section > ul { max-width: 68ch; }
+  ul.tight { padding-left: 1.2em; }
+  ul.tight li { margin-bottom: 8px; }
+
+  .diagram {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin: 36px 0;
+    padding: 28px 20px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow-x: auto;
+  }
+  .node {
+    flex: 0 0 auto;
+    text-align: center;
+    padding: 14px 16px;
+    border-radius: 10px;
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 0.8rem;
+    min-width: 92px;
+  }
+  .node.highlight { border-color: var(--accent); color: var(--accent); }
+  .node .big { font-size: 1.1rem; display: block; margin-bottom: 4px; }
+  .arrow { flex: 0 0 auto; color: var(--text-dim); font-size: 1.3rem; }
+
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px;
+    margin: 32px 0;
+  }
+  .stat {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+  .stat .num {
+    font-family: var(--mono);
+    font-size: 1.9rem;
+    font-weight: 600;
+    color: var(--accent);
+    display: block;
+    line-height: 1.1;
+  }
+  .stat .label { color: var(--text-dim); font-size: 0.88rem; margin-top: 6px; display: block; }
+
+  .bug-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--orange);
+    border-radius: 10px;
+    padding: 20px 22px;
+    margin: 22px 0;
+  }
+  .bug-card .tag {
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--orange);
+    display: block;
+    margin-bottom: 8px;
+  }
+  .bug-card p { margin: 0; max-width: none; }
+  .bug-card p + p { margin-top: 10px; }
+
+  figure { margin: 32px 0; }
+  figure img {
+    border-radius: 12px;
+    border: 1px solid var(--border);
+  }
+  figcaption {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    margin-top: 10px;
+  }
+
+  table.perf { width: 100%; border-collapse: collapse; margin: 28px 0; font-size: 0.92rem; }
+  table.perf th, table.perf td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  table.perf th { font-family: var(--mono); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); }
+  table.perf td.num { font-family: var(--mono); }
+
+  .act-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 14px;
+    margin: 28px 0;
+  }
+  .act {
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .act .n { font-family: var(--mono); color: var(--text-dim); font-size: 0.75rem; }
+  .act .name { font-weight: 600; margin: 4px 0 6px; }
+  .act .desc { color: var(--text-dim); font-size: 0.88rem; }
+
+  .swatch-row { display: flex; gap: 10px; margin: 20px 0; flex-wrap: wrap; }
+  .swatch { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 0.78rem; color: var(--text-dim); }
+  .dot { width: 14px; height: 14px; border-radius: 50%; display: inline-block; }
+
+  footer {
+    padding: 48px 0 64px;
+    color: var(--text-dim);
+    font-size: 0.9rem;
+  }
+  footer a { color: var(--text-dim); text-decoration: underline; }
+  footer a:hover { color: var(--accent); }
+  .footer-links { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 16px; }
+
+  @media (prefers-color-scheme: light) {
+    /* This page commits to one dark, brand-forward look on purpose (it sits next to
+       screenshots of two other dark UIs) -- see the artifact-design convention notes
+       for why an intentionally single-theme page skips the light variant. */
+  }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="eyebrow">Tenstorrent Blackhole &middot; TTNN bring-up</p>
+    <h1 class="title">A world model that predicts <em>what happens next</em> &mdash; never what it looks like</h1>
+    <p class="lede">
+      V-JEPA2-AC is Meta's action-conditioned world model: given a frame, a robot's
+      state, and a candidate action, it predicts the resulting <em>embedding</em>, not
+      a picture. This is the story of getting it running on Tenstorrent Blackhole
+      hardware &mdash; the real bugs, the real numbers, and a dancing robot arm we built
+      to prove it actually works.
+    </p>
+    <div class="cta-row">
+      <a class="btn primary" href="https://github.com/tsingletaryTT/tt-vjepa2">View the code</a>
+      <a class="btn ghost" href="https://huggingface.co/episod/vjepa2-ac-vitg-fpc64-256-droid-tt">Get the weights</a>
+      <a class="btn ghost" href="https://github.com/tsingletaryTT/tt-vjepa2/tree/master/gradio_app">Run the demo</a>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section id="what">
+    <p class="section-kicker">Part 1</p>
+    <h2 class="section-title">What a world model actually predicts</h2>
+    <p>
+      Most "video AI" people have encountered generates pixels: give it a prompt or a
+      frame and it paints you the next one. V-JEPA2-AC does something stranger and, for
+      robotics, more useful. It never renders anything. It encodes a frame into a
+      compressed representation &mdash; an embedding &mdash; and predicts the
+      <em>next embedding</em>, conditioned on an action the robot might take. No
+      pixels are ever generated, checked, or even implied to exist.
+    </p>
+    <div class="diagram">
+      <div class="node"><span class="big">&#128247;</span>real frame</div>
+      <div class="arrow">&rarr;</div>
+      <div class="node highlight"><span class="big">40&times;</span>ViT-g encoder</div>
+      <div class="arrow">&rarr;</div>
+      <div class="node"><span class="big">z</span>embedding</div>
+      <div class="arrow">+</div>
+      <div class="node"><span class="big">a</span>action</div>
+      <div class="arrow">&rarr;</div>
+      <div class="node highlight"><span class="big">24&times;</span>AC predictor</div>
+      <div class="arrow">&rarr;</div>
+      <div class="node"><span class="big">z'</span>predicted z</div>
+    </div>
+    <p>
+      Why does this matter for robots? Because planning is now a search problem in
+      embedding space, not pixel space. Sample a few hundred candidate action
+      sequences, run each one through the predictor, and keep whichever one lands
+      closest to a goal embedding &mdash; that's the Cross-Entropy Method (CEM), and
+      it's how Meta's own researchers get this model to solve real manipulation tasks
+      without any task-specific training. No renderer, no simulator, no reward
+      function hand-tuned per task. Just "does this action get me closer, in the
+      space the model actually understands."
+    </p>
+  </section>
+
+  <section id="hardware">
+    <p class="section-kicker">Part 2</p>
+    <h2 class="section-title">What's really happening on the chip</h2>
+    <p>
+      Porting this to TTNN (Tenstorrent's tensor library) meant reimplementing the
+      encoder and predictor as device-side operation graphs, layer by layer, and
+      checking every one of them against the real reference implementation. That
+      process surfaced several real bugs &mdash; not hypothetical edge cases, but
+      things that would have silently produced wrong answers if left unchecked.
+    </p>
+
+    <div class="bug-card">
+      <span class="tag">Correctness &middot; not a precision issue</span>
+      <p>
+        The reference implementation's rotary position embeddings block-duplicate
+        their frequencies (<code>cat([freq.sin(), freq.sin()])</code>) instead of
+        interleaving them &mdash; not the usual RoPE convention, but the pretrained
+        weights were trained against it. Getting this wrong dropped accuracy to
+        <strong>0.83 PCC</strong> after 40 blocks. The fix wasn't a numerics tweak; it
+        was reproducing someone else's bug on purpose, because the weights expect it.
+      </p>
+    </div>
+
+    <div class="bug-card">
+      <span class="tag">Performance &middot; ~24&times; from one fused op</span>
+      <p>
+        Profiling found that roughly 95% of device time was going to
+        reshape/slice/permute scaffolding around RoPE application &mdash; not the
+        matrix multiplies doing the actual work. Replacing a per-axis
+        slice&rarr;rotate&rarr;concat loop with one call to
+        <code>ttnn.experimental.rotary_embedding_llama</code> (verified bit-for-bit
+        identical, PCC 1.0, before trusting it) cut end-to-end latency from
+        <strong>2913&nbsp;ms</strong> to roughly <strong>121&nbsp;ms</strong> per
+        forward pass.
+      </p>
+    </div>
+
+    <div class="bug-card">
+      <span class="tag">A framework bug, isolated and worked around</span>
+      <p>
+        The predictor's frame-causal attention needs a block-structured mask, and
+        <code>ttnn.transformer.scaled_dot_product_attention</code>'s built-in
+        <code>attn_mask</code> support doesn't produce correct results at that shape
+        (PCC 0.927 masked vs. 0.997 unmasked, independent of mask magnitude &mdash;
+        which rules out a numerics explanation and points at the kernel). A manual
+        matmul&rarr;softmax&rarr;matmul with the same additive mask gets PCC 0.9999.
+      </p>
+    </div>
+
+    <div class="bug-card">
+      <span class="tag">Memory &middot; found the hard way, on real hardware</span>
+      <p>
+        Building an "imagination rollout" &mdash; chaining the predictor's own output
+        back in as the next frame, the same trick Meta's CEM planner uses &mdash;
+        means the attention context grows by one frame every step. The predictor's
+        rope/mask cache was keyed per sequence length and never evicted: fine for a
+        benchmark that only ever revisits one fixed shape, fatal for a rollout that
+        visits a new one every step. It crashed with a DRAM allocator error
+        (<code>TT_FATAL: Out of Memory</code>) around 60&ndash;90 steps into a long
+        rollout &mdash; reproduced twice, including on a freshly reset device, before
+        the actual cause (an unbounded per-shape cache, not fragmentation) was found
+        and fixed.
+      </p>
+    </div>
+
+    <table class="perf">
+      <thead><tr><th>Configuration</th><th>Latency</th><th>Throughput</th></tr></thead>
+      <tbody>
+        <tr><td>Blackhole &middot; TTNN, bf16-mixed, traced replay</td><td class="num">120.7&nbsp;ms</td><td class="num">66.3&nbsp;frames/s</td></tr>
+        <tr><td>Same host's CPU &middot; reference PyTorch, fp32 eager</td><td class="num">4293.2&nbsp;ms</td><td class="num">1.86&nbsp;frames/s</td></tr>
+      </tbody>
+    </table>
+    <p style="font-size:0.88rem;color:var(--text-dim);">
+      Same weights, same 8-frames-@-256px shape, same machine &mdash; the CPU number is
+      the honest baseline available (no GPU was on hand to compare against), not a
+      claim about GPU-class hardware. Correctness throughout: PCC &ge; 0.995 for both
+      the encoder and predictor against the reference implementation, mixed bf16/fp32
+      precision (bf16 where the FLOPs are, fp32 where 40&ndash;64 layers of depth make
+      precision loss compound).
+    </p>
+  </section>
+
+  <section id="show">
+    <p class="section-kicker">Part 3</p>
+    <h2 class="section-title">Proving it with a dancing robot arm</h2>
+    <p>
+      Numbers on a page are convincing. Watching a model keep predicting, frame after
+      frame, without ever seeing a real camera again after the first one, is more
+      convincing. So: a Gradio app that stages a small robot end-effector through a
+      seven-act show, entirely imagined &mdash; the model chaining its own predicted
+      embeddings forward exactly the way CEM planning does, just driven by a
+      choreography instead of an optimizer.
+    </p>
+    <figure>
+      <img src="assets/show-hero.png" alt="The Gradio app's Grayskull-themed control UI, showing the seven-act show tab">
+      <figcaption>The operator UI &mdash; a grayscale-plus-hot-pink theme borrowed from
+      <a href="https://github.com/tenstorrent/tt-toplike">tt-toplike</a>'s own
+      "Grayskull" mode. This is the control surface, not the performance.</figcaption>
+    </figure>
+    <div class="act-grid">
+      <div class="act"><span class="n">Act 1</span><div class="name">Instant Kraftwerk</div><div class="desc">Steady, mechanical, quantized snap-transitions.</div></div>
+      <div class="act"><span class="n">Act 2</span><div class="name">Careful with that Ax, Eugene</div><div class="desc">A long, near-still build, then one sudden max-energy strike.</div></div>
+      <div class="act"><span class="n">Act 3</span><div class="name">Tangerine Ratchet</div><div class="desc">Fast, jittery, syncopated spin-and-snap.</div></div>
+      <div class="act"><span class="n">Act 4</span><div class="name">Poppin and Lockin</div><div class="desc">Real breakdance vocabulary: snaps punctuated by held freezes.</div></div>
+      <div class="act"><span class="n">Act 5</span><div class="name">Your Name on a Grain of Rice</div><div class="desc">Deliberately tiny, precise motion &mdash; a close-up in restraint.</div></div>
+      <div class="act"><span class="n">Act 6</span><div class="name">Laser Cats Cutting a Rug</div><div class="desc">The biggest, fastest, full-spectrum finale move.</div></div>
+      <div class="act"><span class="n">Act 7</span><div class="name">XOXO TT</div><div class="desc">The arm literally traces the letters X, O, T &mdash; gripper lifting like a pen.</div></div>
+    </div>
+    <figure>
+      <img src="assets/kraftwerk-arm.png" alt="The end-effector mid-move during the Instant Kraftwerk act, colored by the model's own per-step energy signal">
+      <figcaption>Act 1, mid-move: color here is never decorative &mdash; hue tracks
+      the model's own per-step "energy" (how much its prediction changed), brightness
+      tracks real measured latency for that step.</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/multi-dancer-stage.png" alt="Three independently-staged robot arms visible at once, one active and two frozen in their final pose">
+      <figcaption>Each act gets its own independent rollout &mdash; always starting
+      fresh from the one real encoded frame, never chained from a previous act's
+      ending pose &mdash; placed at its own spot on a shared stage. Earlier acts freeze
+      in place as the show moves on, rather than one arm relocating through all
+      seven.</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/xoxo-tt-trace.png" alt="The end-effector's trail spelling out XOXO TT in a gestural stroke">
+      <figcaption>The finale: the trajectory itself, traced by a stylized 2-link arm
+      with no real joint kinematics behind it &mdash; the model only ever knows the
+      end-effector's pose, not shoulder or elbow angles.</figcaption>
+    </figure>
+    <p>
+      Every color you see is driven by a real signal, not decoration &mdash; a
+      convention borrowed from
+      <a href="https://github.com/tenstorrent/tt-toplike">tt-toplike</a>, Tenstorrent's
+      own hardware-telemetry visualizer: hue and brightness come from the model's own
+      per-step "energy" (how much its prediction changed) and the real measured
+      forward-pass latency for that step, never a canned animation value.
+    </p>
+    <div class="swatch-row">
+      <span class="swatch"><span class="dot" style="background:#ff2b2b"></span>energy &rarr; red</span>
+      <span class="swatch"><span class="dot" style="background:#5588cc"></span>calm &rarr; cool</span>
+      <span class="swatch"><span class="dot" style="background:#ffb347"></span>Tangerine Ratchet</span>
+      <span class="swatch"><span class="dot" style="background:#cc44aa"></span>full-spectrum finale</span>
+    </div>
+  </section>
+
+  <section id="implications">
+    <p class="section-kicker">Part 4</p>
+    <h2 class="section-title">Why this matters beyond one robot arm</h2>
+    <p>
+      The interesting claim here isn't "a robot dances." It's that a real,
+      pretrained world model &mdash; the kind of model a planning stack would actually
+      use to evaluate thousands of candidate actions before a robot moves &mdash; runs
+      at 66 frames/sec on a single Blackhole chip, with correctness verified layer by
+      layer against the original research code. A few implications follow from that:
+    </p>
+    <ul class="tight">
+      <li>
+        <strong>Planning in latent space is cheap once the model runs fast.</strong>
+        CEM-style planning needs to evaluate many candidate action sequences per
+        decision. At 120&nbsp;ms/forward, evaluating a batch of them stops being the
+        bottleneck &mdash; the search itself, or the robot's own physical constraints,
+        becomes the limiting factor instead.
+      </li>
+      <li>
+        <strong>The bring-up bugs are the interesting part, not a footnote.</strong>
+        A block-duplicated RoPE convention, a framework mask bug, an unbounded
+        per-shape cache &mdash; none of these show up in a paper's abstract, but every
+        one of them is exactly what stands between "the algorithm works" and "the
+        algorithm runs correctly, quickly, on real silicon." Porting research models to
+        new hardware is where a lot of ML engineering actually happens.
+      </li>
+      <li>
+        <strong>Action-conditioned world models generalize past the one dataset they
+        were trained on.</strong> The AC predictor here was trained on DROID robot
+        interaction data, but the mechanism &mdash; predict an embedding, condition on
+        an action, search over action sequences &mdash; doesn't care what the actions
+        represent. The same shape of model could condition on a game controller input,
+        a steering command, or an API call, with the model itself unchanged.
+      </li>
+      <li>
+        <strong>This is a demonstration of TTNN as a real bring-up target, not a
+        vendor benchmark.</strong> Every number on this page came from actually
+        rewriting the model layer by layer, verifying each layer, and fixing what
+        broke &mdash; not from a synthetic microbenchmark. That's the bar a new
+        research model needs to clear to be worth running on new hardware, and this
+        one cleared it.
+      </li>
+    </ul>
+  </section>
+
+</main>
+
+<footer class="wrap">
+  <div class="footer-links">
+    <a href="https://github.com/tsingletaryTT/tt-vjepa2">GitHub &mdash; tt-vjepa2</a>
+    <a href="https://huggingface.co/episod/vjepa2-ac-vitg-fpc64-256-droid-tt">HuggingFace &mdash; stripped checkpoint</a>
+    <a href="https://github.com/facebookresearch/vjepa2">Original V-JEPA 2 (Meta)</a>
+    <a href="https://arxiv.org/abs/2506.09985">Paper</a>
+  </div>
+  <p>
+    MIT-licensed, matching the upstream <a href="https://github.com/facebookresearch/vjepa2/blob/main/LICENSE">V-JEPA 2 license</a>.
+    Not an official Meta or Tenstorrent product &mdash; an independent bring-up.
+  </p>
+</footer>
+
+</body>
+</html>
