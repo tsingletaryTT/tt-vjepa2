@@ -108,15 +108,18 @@ def build_multi_dancer_figure(slots: list, l1: float = 0.28, l2: float = 0.28,
     spot on a shared stage (see app.py's run_show for how slots are built -- each
     slot's poses already include that spot's world-space offset). As the show moves
     from slot to slot, earlier dancers freeze in their final pose at their own spot
-    instead of one dancer relocating through every act; the camera recenters and
-    reframes on whichever slot is currently animating (same tt-toplike-inspired
-    per-act palette + live HUD as before, just per-slot now). Ends on a few
+    instead of one dancer relocating through every act. The camera is fixed for the
+    whole show (see FIXED_CAMERA below) rather than tracking whichever slot is
+    current -- a moving/recentering camera was tried twice and looked wrong once the
+    stage held several dancers; a single wide view that always contains the entire
+    stage trivially always contains the current dancer too. Ends on a few
     wide-establishing 'curtain call' frames showing every dancer at once before the
     show loops back to the top.
 
     Each slot dict needs: name, poses [T+1,7], energies [T], latencies_ms [T],
     pen_up [T] bool, labels [T] str, palette_segments [(palette,start,end), ...] in
-    LOCAL (this slot's own) step-index space, zoom, camera_bias."""
+    LOCAL (this slot's own) step-index space. `zoom`/`camera_bias` are accepted but
+    unused now that the camera is fixed -- kept so callers don't need updating."""
     import plotly.graph_objects as go
 
     for slot in slots:
@@ -134,9 +137,14 @@ def build_multi_dancer_figure(slots: list, l1: float = 0.28, l2: float = 0.28,
         return slot["palette_segments"][-1][0]
 
     # One global stage: axis ranges span every slot's full trajectory + base, so the
-    # whole lineup is always technically in frame -- only the camera's focus and zoom
-    # change per slot, which is what makes "leave a dancer, refocus on the next" (and
-    # the final curtain call) legible instead of the grid itself jumping around.
+    # whole lineup is always in frame. A per-act camera that recentered/zoomed toward
+    # whichever slot was current (tried twice: fully recentered, then partially
+    # blended) kept behaving unpredictably once the stage held several dancers --
+    # so the camera is now simply FIXED for the entire show: one eye/center, computed
+    # once, never moving. Since the axis range already covers every dancer's full
+    # trajectory, a fixed wide view unavoidably keeps the current dancer in frame at
+    # all times -- "always see the current dancer" falls out of "always see
+    # everything" rather than needing per-act tracking logic at all.
     all_pts = np.concatenate(
         [s["poses"][:, :3] for s in slots] + [s["base"][None, :] for s in slots], axis=0
     )
@@ -150,29 +158,7 @@ def build_multi_dancer_figure(slots: list, l1: float = 0.28, l2: float = 0.28,
         "y": [center[1] - half_range, center[1] + half_range],
         "z": [max(center[2] - half_range, 0.0), center[2] + half_range],
     }
-
-    # A per-act camera fully recentered + tightly zoomed on just that act (the
-    # single-dancer version's approach) hides every other dancer entirely once the
-    # stage is wide enough to hold several of them -- found this by actually looking
-    # at a render, not assuming it. Instead: blend only partway toward each act's own
-    # position (BLEND_TOWARD_ACT), and require a minimum eye distance that grows with
-    # how wide the whole staged lineup is, so "focus on the current dancer" reads as
-    # emphasis on an otherwise-visible stage, not a tight solo close-up.
-    BLEND_TOWARD_ACT = 0.4
-    stage_half_width_norm = float(np.linalg.norm((bbox_max - bbox_min) / 2) / half_range)
-
-    def camera_for(seg_center, zoom, camera_bias):
-        seg_norm_center = (seg_center - center) / half_range
-        norm_center = seg_norm_center * BLEND_TOWARD_ACT  # partial recenter, not full
-        offset = np.array(camera_bias) * (zoom / 1.5)
-        min_dist = max(0.75, stage_half_width_norm * 0.8)  # keep the whole lineup in frame
-        dist = np.linalg.norm(offset)
-        if dist < min_dist:
-            offset = offset / (dist + 1e-9) * min_dist
-        eye = norm_center + offset
-        return dict(center=dict(x=float(norm_center[0]), y=float(norm_center[1]), z=float(norm_center[2])),
-                    eye=dict(x=float(eye[0]), y=float(eye[1]), z=float(eye[2])),
-                    up=dict(x=0, y=0, z=1))
+    FIXED_CAMERA = dict(center=dict(x=0, y=0, z=0), eye=dict(x=1.8, y=1.8, z=1.3), up=dict(x=0, y=0, z=1))
 
     def frozen_trace(slot):
         """A completed dancer's final pose, held static -- same shape as a live arm
@@ -237,7 +223,7 @@ def build_multi_dancer_figure(slots: list, l1: float = 0.28, l2: float = 0.28,
                 f"ENERGY {energy_val:.3f} &nbsp;·&nbsp; {latency_val:.1f} ms"
             )
             frame_layout = go.Layout(
-                scene_camera=camera_for(poses[:, :3].mean(axis=0), slot["zoom"], slot["camera_bias"]),
+                scene_camera=FIXED_CAMERA,
                 annotations=[dict(
                     text=hud_text, xref="paper", yref="paper", x=0.02, y=0.98,
                     showarrow=False, align="left", font=dict(family="'Orbitron', monospace", size=13, color=color),
@@ -250,13 +236,11 @@ def build_multi_dancer_figure(slots: list, l1: float = 0.28, l2: float = 0.28,
                 global_step += 1
         frozen = frozen + [frozen_trace(slot)]
 
-    # Curtain call: a wide shot holding every dancer's final pose at once.
-    stage_center = np.stack([s["poses"][-1, :3] for s in slots]).mean(axis=0)
-    curtain_camera = camera_for(stage_center, zoom=1.5 * max(1.0, len(slots) / 3), camera_bias=(1.6, 1.6, 1.2))
+    # Curtain call: hold every dancer's final pose at once (same fixed camera).
     for _ in range(curtain_call_frames):
         frames.append(go.Frame(
             data=frozen, name=str(len(frames)),
-            layout=go.Layout(scene_camera=curtain_camera, annotations=[dict(
+            layout=go.Layout(scene_camera=FIXED_CAMERA, annotations=[dict(
                 text="CURTAIN CALL", xref="paper", yref="paper", x=0.02, y=0.98,
                 showarrow=False, align="left", font=dict(family="'Orbitron', monospace", size=16, color="#ff2b2b"),
                 bgcolor="rgba(0,0,0,0.55)", bordercolor="#ff2b2b", borderwidth=1,
@@ -281,7 +265,7 @@ def build_multi_dancer_figure(slots: list, l1: float = 0.28, l2: float = 0.28,
         height=600,
         updatemenus=[dict(
             type="buttons", showactive=False, bgcolor="#1a0000", font=dict(color="#ff2b2b"),
-            buttons=[dict(label="▶ DIE VORFÜHRUNG // START THE SHOW", method="animate",
+            buttons=[dict(label="▶ Play", method="animate",
                           args=[None, {"frame": {"duration": 220, "redraw": True},
                                        "transition": {"duration": 0}, "fromcurrent": True}])],
         )],
@@ -379,7 +363,7 @@ def build_dance_figure(poses: np.ndarray, energies: np.ndarray, latencies_ms: np
         # (transition duration=0) reads as mechanical gait, not a smooth glide.
         updatemenus=[dict(
             type="buttons", showactive=False, bgcolor="#1a0000", font=dict(color="#ff2b2b"),
-            buttons=[dict(label="▶ FUNKTION: TANZEN", method="animate",
+            buttons=[dict(label="▶ Play", method="animate",
                           args=[None, {"frame": {"duration": 220, "redraw": True},
                                        "transition": {"duration": 0}, "fromcurrent": True}])],
         )],
