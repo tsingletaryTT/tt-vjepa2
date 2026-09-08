@@ -12,6 +12,11 @@ This repo is the bring-up code only — it depends on a
 small shared utilities (`models.common.lightweightmodule`,
 `models.common.tensor_utils`). It is not a standalone pip package.
 
+See [MODEL_CARD.md](MODEL_CARD.md) for intended use, evaluation data, and — stated
+plainly rather than glossed over — which of this model family's usual benchmarks
+(IntPhys 2, MVPBench, CausalVQA, real-robot success rate) have *not* been run against
+this port yet.
+
 ## Results
 
 8 frames @ 256px → 1024 context tokens → predictor → 1024 predicted tokens, traced-replay
