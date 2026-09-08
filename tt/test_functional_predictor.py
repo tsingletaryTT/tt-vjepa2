@@ -7,7 +7,6 @@ actions/states (not the encoder's actual output) -- isolates predictor correctne
 encoder correctness, per ttm-functional-decoder's "prefer a layer-only HF reference" guidance
 generalized to "prefer a component-only reference before chaining the whole model"."""
 
-import os
 import sys
 from pathlib import Path
 
@@ -15,17 +14,12 @@ import torch
 
 import ttnn
 
-# Requires: `git clone https://github.com/facebookresearch/vjepa2 reference` at the repo
-# root, and TT_METAL_HOME set to a tt-metal checkout (for `ttnn` + `models.common.*`).
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "reference"))
+AUTOPORT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(AUTOPORT / "reference"))
 from src.models.ac_predictor import VisionTransformerPredictorAC  # noqa: E402
 
-TT_METAL_HOME = os.environ.get("TT_METAL_HOME")
-if not TT_METAL_HOME:
-    raise RuntimeError("Set TT_METAL_HOME to a tt-metal checkout before running this script.")
-sys.path.insert(0, TT_METAL_HOME)
-sys.path.insert(0, str(REPO_ROOT))  # REPO_ROOT/tt/ is the "tt" package itself
+sys.path.insert(0, str(AUTOPORT.parent.parent.parent))
+sys.path.insert(0, str(AUTOPORT))  # AUTOPORT/tt/ is the "tt" package itself
 from tt.functional_predictor import VJEPA2Predictor, VJEPA2PredictorConfig  # noqa: E402
 from tt.test_functional_encoder import CKPT_PATH, pcc  # noqa: E402
 
@@ -45,10 +39,19 @@ def main():
     states = torch.randn(B, gT, cfg.action_embed_dim)
 
     ref = VisionTransformerPredictorAC(
-        img_size=Hpx, patch_size=patch_size, num_frames=T, tubelet_size=tubelet_size,
-        embed_dim=cfg.encoder_hidden_size, predictor_embed_dim=cfg.pred_hidden_size,
-        depth=cfg.pred_num_layers, num_heads=cfg.pred_num_heads, mlp_ratio=cfg.pred_mlp_ratio,
-        qkv_bias=True, is_frame_causal=True, use_rope=True, action_embed_dim=cfg.action_embed_dim,
+        img_size=Hpx,
+        patch_size=patch_size,
+        num_frames=T,
+        tubelet_size=tubelet_size,
+        embed_dim=cfg.encoder_hidden_size,
+        predictor_embed_dim=cfg.pred_hidden_size,
+        depth=cfg.pred_num_layers,
+        num_heads=cfg.pred_num_heads,
+        mlp_ratio=cfg.pred_mlp_ratio,
+        qkv_bias=True,
+        is_frame_causal=True,
+        use_rope=True,
+        action_embed_dim=cfg.action_embed_dim,
         use_extrinsics=False,
     )
     ref.eval()

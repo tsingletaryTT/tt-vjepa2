@@ -15,7 +15,6 @@ is the time going" (attention vs MLP vs the rope/reshape/concat scaffolding), an
 replay collapses the graph into one opaque execution from the profiler's point of view.
 """
 
-import os
 import sys
 from pathlib import Path
 
@@ -23,13 +22,8 @@ import torch
 
 import ttnn
 
-# Requires TT_METAL_HOME set to a tt-metal checkout (for `ttnn` + `models.common.*`).
-REPO_ROOT = Path(__file__).resolve().parent.parent
-TT_METAL_HOME = os.environ.get("TT_METAL_HOME")
-if not TT_METAL_HOME:
-    raise RuntimeError("Set TT_METAL_HOME to a tt-metal checkout before running this script.")
-sys.path.insert(0, TT_METAL_HOME)
-sys.path.insert(0, str(REPO_ROOT))  # REPO_ROOT/tt/ is the package; REPO_ROOT itself must be on sys.path
+AUTOPORT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(AUTOPORT))  # AUTOPORT/tt/ is the package; AUTOPORT itself must be on sys.path
 
 from tt.functional_encoder import VJEPA2Encoder, VJEPA2EncoderConfig  # noqa: E402
 from tt.functional_predictor import VJEPA2Predictor, VJEPA2PredictorConfig  # noqa: E402
@@ -101,8 +95,10 @@ def main():
             forward_sliced()
         ttnn.synchronize_device(device)
 
-        print(f"Signposted measured forward pass ({N_BLOCKS_TO_PROFILE} encoder + "
-              f"{N_BLOCKS_TO_PROFILE} predictor blocks, representative slice)...")
+        print(
+            f"Signposted measured forward pass ({N_BLOCKS_TO_PROFILE} encoder + "
+            f"{N_BLOCKS_TO_PROFILE} predictor blocks, representative slice)..."
+        )
         ttnn.profiler.tracy_message("PERF_FORWARD")
         out = forward_sliced()
         ttnn.synchronize_device(device)

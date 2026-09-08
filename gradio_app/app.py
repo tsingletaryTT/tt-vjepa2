@@ -31,7 +31,6 @@ implementation with --backend reference (what an HF Space without TT hardware ru
 import argparse
 import html as html_lib
 import sys
-import time
 from pathlib import Path
 
 import gradio as gr
@@ -82,6 +81,149 @@ AUTO_LOOP_SCRIPT = """
 </script>
 """
 
+# Show-tab-only: real Web Audio sonification, one "voice" per act palette (see
+# robot_viz.PALETTE_VOICES). Every voice's pitch is driven by that frame's real
+# energy_norm and its brightness/rate by real latency_norm -- the same "every signal
+# here is real" honesty the color law already has, now extended to sound. A steady
+# low motorikPulse plays under every non-silent frame (Kraftwerk's motorik rhythm);
+# the palette's own voice is the melodic/textural layer riding on top of it.
+#
+# This replaces the single continuous `Plotly.animate(gd, null, ...)` call the plain
+# AUTO_LOOP_SCRIPT uses with a step-by-step loop (one frame at a time), so each frame
+# transition can trigger its own matching audio event -- audio and visuals advance
+# together, one animate-promise at a time, looping via index wraparound instead of
+# the plain script's explicit "seek back to frame 0" restart dance.
+SHOW_AUTO_LOOP_SCRIPT = """
+<script>
+(function() {
+  var audioCtx = null;
+  function ensureAudio() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    return audioCtx;
+  }
+
+  var STEP_DUR = 0.22; // matches the 220ms/frame animation cadence below
+
+  function motorikPulse(c, t) {
+    var osc = c.createOscillator(), gain = c.createGain();
+    osc.type = 'sine'; osc.frequency.value = 55;
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(0.3, t + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+    osc.connect(gain).connect(c.destination);
+    osc.start(t); osc.stop(t + 0.1);
+  }
+
+  function leadTone(c, t, dur, freq, filtFreq, gainPeak) {
+    var osc = c.createOscillator(), filt = c.createBiquadFilter(), gain = c.createGain();
+    osc.type = 'sawtooth'; osc.frequency.value = freq;
+    filt.type = 'lowpass'; filt.frequency.value = filtFreq;
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(gainPeak, t + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    osc.connect(filt).connect(gain).connect(c.destination);
+    osc.start(t); osc.stop(t + dur);
+  }
+
+  function noiseBurst(c, t, dur, gainPeak, filtFreq) {
+    var bufSize = Math.max(1, Math.floor(c.sampleRate * dur));
+    var buf = c.createBuffer(1, bufSize, c.sampleRate);
+    var data = buf.getChannelData(0);
+    for (var i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+    var src = c.createBufferSource(); src.buffer = buf;
+    var filt = c.createBiquadFilter(); filt.type = 'bandpass'; filt.frequency.value = filtFreq; filt.Q.value = 2.5;
+    var gain = c.createGain();
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(gainPeak, t + 0.003);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    src.connect(filt).connect(gain).connect(c.destination);
+    src.start(t); src.stop(t + dur);
+  }
+
+  var VOICES = {
+    motorik: function(c, t, m) {
+      leadTone(c, t, STEP_DUR * 0.9, 220 + m.energy_norm * 440, 400 + m.latency_norm * 3000, 0.16);
+    },
+    ratchet: function(c, t, m) {
+      var n = 2 + Math.round(m.energy_norm * 5);
+      for (var k = 0; k < n; k++) noiseBurst(c, t + k * (STEP_DUR / n) * 0.8, 0.02, 0.2, 1200 + m.energy_norm * 2500);
+    },
+    stab: function(c, t) { leadTone(c, t, 0.12, 660, 4000, 0.28); },
+    soft: function(c, t, m) {
+      leadTone(c, t, STEP_DUR * 0.8, 160 + m.energy_norm * 120, 500 + m.latency_norm * 800, 0.08);
+    },
+    ticks: function(c, t, m) {
+      var osc = c.createOscillator(), gain = c.createGain();
+      osc.type = 'sine'; osc.frequency.value = 1800 + m.energy_norm * 1200;
+      gain.gain.setValueAtTime(0, t);
+      gain.gain.linearRampToValueAtTime(0.04, t + 0.002);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.03);
+      osc.connect(gain).connect(c.destination);
+      osc.start(t); osc.stop(t + 0.04);
+    },
+    arpeggio: function(c, t, m) {
+      var notes = [0, 4, 7, 12];
+      var base = 300 + m.energy_norm * 300;
+      notes.forEach(function(semi, idx) {
+        var f = base * Math.pow(2, semi / 12);
+        leadTone(c, t + idx * (STEP_DUR / notes.length) * 0.8, STEP_DUR / notes.length,
+                 f, 2000 + m.latency_norm * 3000, 0.12);
+      });
+    },
+    chime: function(c, t, m) {
+      var osc = c.createOscillator(), gain = c.createGain();
+      osc.type = 'triangle'; osc.frequency.value = 500 + m.energy_norm * 500;
+      gain.gain.setValueAtTime(0, t);
+      gain.gain.linearRampToValueAtTime(0.15, t + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + STEP_DUR * 1.5);
+      osc.connect(gain).connect(c.destination);
+      osc.start(t); osc.stop(t + STEP_DUR * 1.5);
+    },
+    silence: function() {},
+  };
+
+  function triggerAudio(meta) {
+    if (!audioCtx || !meta || meta.voice === 'silence') return;
+    var t = audioCtx.currentTime + 0.01;
+    motorikPulse(audioCtx, t);
+    (VOICES[meta.voice] || VOICES.motorik)(audioCtx, t, meta);
+  }
+
+  function tryPlay() {
+    var gd = document.querySelector('.js-plotly-plot');
+    if (!gd || !gd._transitionData || !gd._transitionData._frames || !gd._transitionData._frames.length) {
+      setTimeout(tryPlay, 150);
+      return;
+    }
+    var idx = 0;
+    function playFrame() {
+      var meta = FRAME_AUDIO[idx];
+      triggerAudio(meta);
+      var duration = (meta && meta.duration_ms) || 220;
+      Plotly.animate(gd, [String(idx)], {frame: {duration: duration, redraw: true}, transition: {duration: 0}, mode: 'immediate'})
+        .then(function() {
+          idx = (idx + 1) % FRAME_AUDIO.length;
+          setTimeout(playFrame, 0);
+        });
+    }
+    playFrame();
+  }
+  tryPlay();
+
+  // A fresh iframe document needs its own user gesture to unlock a new AudioContext
+  // -- the outer Gradio "Start the Show" click doesn't count for this document.
+  var btn = document.createElement('button');
+  btn.textContent = '\N{SPEAKER WITH THREE SOUND WAVES}️ Enable Sound';
+  btn.style.cssText = 'position:fixed;top:10px;right:10px;z-index:1000;padding:8px 14px;'
+    + 'background:#1a0000;color:#ff8888;border:1px solid #ff2b2b;border-radius:6px;'
+    + "font-family:'Orbitron',monospace;font-size:12px;cursor:pointer;";
+  btn.onclick = function() { ensureAudio(); btn.remove(); };
+  document.body.appendChild(btn);
+})();
+</script>
+"""
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE_TRAJ = REPO_ROOT / "reference" / "notebooks" / "franka_example_traj.npz"
 
@@ -90,7 +232,9 @@ EXAMPLE_TRAJ = REPO_ROOT / "reference" / "notebooks" / "franka_example_traj.npz"
 # closest well-supported Google Font to that family). This stays exactly as-is for the
 # show/dance iframes themselves (see wrap_iframe) -- it's the performance's own
 # identity, not the surrounding app chrome.
-KRAFTWERK_FONT_IMPORT = "@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&display=swap');"
+KRAFTWERK_FONT_IMPORT = (
+    "@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&display=swap');"
+)
 
 # The surrounding Gradio UI (outside the iframes) uses tt-toplike's "Grayskull" theme
 # concept (see ~/code/tt-toplike/src/ui/colors.rs::grayskull_rgb): the rainbow
@@ -183,15 +327,25 @@ def run_grounded_check(backend, frames: np.ndarray, states: np.ndarray, grid_n: 
             rep_g, _ = backend.predict_step(reps, a_t, states_t)
             errors[j, i] = l2(rep_g, rep1_actual)
 
-    fig = go.Figure(data=go.Heatmap(
-        z=errors, x=grid, y=grid, colorscale="Turbo", colorbar=dict(title="prediction error"),
-    ))
-    fig.add_trace(go.Scatter(x=[0], y=[0], mode="markers", marker=dict(size=14, color="white", symbol="x"),
-                              name="real action"))
+    fig = go.Figure(
+        data=go.Heatmap(
+            z=errors,
+            x=grid,
+            y=grid,
+            colorscale="Turbo",
+            colorbar=dict(title="prediction error"),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(x=[0], y=[0], mode="markers", marker=dict(size=14, color="white", symbol="x"), name="real action")
+    )
     fig.update_layout(
-        template="plotly_dark", paper_bgcolor="#0a0014", plot_bgcolor="#0a0014",
+        template="plotly_dark",
+        paper_bgcolor="#0a0014",
+        plot_bgcolor="#0a0014",
         title="prediction error vs. Δ(dx,dy) around the real action (white x = real action taken)",
-        xaxis_title="Δdx", yaxis_title="Δdy",
+        xaxis_title="Δdx",
+        yaxis_title="Δdy",
     )
 
     report = (
@@ -207,8 +361,9 @@ def run_grounded_check(backend, frames: np.ndarray, states: np.ndarray, grid_n: 
     return f0, f1, fig, report
 
 
-def run_cem_plan(backend, frames: np.ndarray, states: np.ndarray, cem_steps: int, samples: int, topk: int,
-                  maxnorm: float = 0.12):
+def run_cem_plan(
+    backend, frames: np.ndarray, states: np.ndarray, cem_steps: int, samples: int, topk: int, maxnorm: float = 0.12
+):
     """Runs the real CEM optimizer (planning.cem_search, a faithful port of Meta's own
     algorithm) to find the action that best predicts frame 1 from frame 0 -- then
     compares what it found against the actual recorded action. Returns (plotly
@@ -227,8 +382,9 @@ def run_cem_plan(backend, frames: np.ndarray, states: np.ndarray, cem_steps: int
     rep0 = backend.encode_frame(f0)
     rep1_actual = backend.encode_frame(f1)
 
-    found_action, history = cem_search(backend, rep0, s0, rep1_actual, cem_steps=cem_steps, samples=samples,
-                                        topk=topk, maxnorm=maxnorm)
+    found_action, history = cem_search(
+        backend, rep0, s0, rep1_actual, cem_steps=cem_steps, samples=samples, topk=topk, maxnorm=maxnorm
+    )
 
     # How good is the action CEM found, vs. the one that was really taken?
     actions_t = torch.from_numpy(found_action).float().view(1, 1, 7)
@@ -241,15 +397,32 @@ def run_cem_plan(backend, frames: np.ndarray, states: np.ndarray, cem_steps: int
 
     steps = [h["step"] for h in history]
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=steps, y=[h["mean_error"] for h in history], mode="lines+markers",
-                              name="mean error (this iteration's samples)", line=dict(color="#ff8888")))
-    fig.add_trace(go.Scatter(x=steps, y=[h["best_error"] for h in history], mode="lines+markers",
-                              name="best error (this iteration's samples)", line=dict(color="#ff2b2b", width=3)))
+    fig.add_trace(
+        go.Scatter(
+            x=steps,
+            y=[h["mean_error"] for h in history],
+            mode="lines+markers",
+            name="mean error (this iteration's samples)",
+            line=dict(color="#ff8888"),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=steps,
+            y=[h["best_error"] for h in history],
+            mode="lines+markers",
+            name="best error (this iteration's samples)",
+            line=dict(color="#ff2b2b", width=3),
+        )
+    )
     fig.update_layout(
-        template="plotly_dark", paper_bgcolor="#000000", plot_bgcolor="#000000",
+        template="plotly_dark",
+        paper_bgcolor="#000000",
+        plot_bgcolor="#000000",
         font=dict(family="'Orbitron', monospace", color="#ff2b2b"),
         title="CEM convergence: prediction error toward the real frame 1, per iteration",
-        xaxis_title="CEM iteration", yaxis_title="prediction error (L2, embedding space)",
+        xaxis_title="CEM iteration",
+        yaxis_title="prediction error (L2, embedding space)",
     )
 
     report = (
@@ -275,8 +448,9 @@ def run_cem_plan(backend, frames: np.ndarray, states: np.ndarray, cem_steps: int
     return fig, report
 
 
-def imagination_rollout(backend, start_frame: np.ndarray, start_pose: np.ndarray, actions: np.ndarray,
-                         rep0: torch.Tensor | None = None):
+def imagination_rollout(
+    backend, start_frame: np.ndarray, start_pose: np.ndarray, actions: np.ndarray, rep0: torch.Tensor | None = None
+):
     """The core loop shared by every imagined-rollout tab: encode the one real
     starting frame (unless a precomputed `rep0` is passed in, e.g. when several
     independent rollouts share the same starting frame -- see run_show), then chain
@@ -310,9 +484,7 @@ def run_choreography(backend, frames: np.ndarray, states: np.ndarray, sequence: 
     steps_per_move = int(steps_per_move)
     actions, segments = build_choreography(sequence, steps_per_move)
     if len(actions) == 0:
-        return None, (
-            f"No recognized moves in `{sequence}`. Known moves: {', '.join(MOVES)}."
-        )
+        return None, (f"No recognized moves in `{sequence}`. Known moves: {', '.join(MOVES)}.")
     start_pose = states[0].copy()
     poses, energies, latencies = imagination_rollout(backend, frames[0], start_pose, actions)
 
@@ -365,19 +537,26 @@ def run_show(backend, frames: np.ndarray, states: np.ndarray):
     slots = []
     for i, group in enumerate(slot_groups):
         lo, hi = group["segments"][0]["start"], group["segments"][-1]["end"]
-        poses, energies, latencies = imagination_rollout(
-            backend, frames[0], start_pose, actions[lo:hi], rep0=rep0
-        )
+        poses, energies, latencies = imagination_rollout(backend, frames[0], start_pose, actions[lo:hi], rep0=rep0)
         poses = poses.copy()
         poses[:, :3] += np.array([0.0, i * STAGE_SPACING, 0.0], dtype=np.float32)
         palette_segments = [(seg["palette"], seg["start"] - lo, seg["end"] - lo) for seg in group["segments"]]
-        slots.append(dict(
-            name=group["name"], poses=poses, energies=energies, latencies_ms=latencies,
-            pen_up=pen_up[lo:hi], labels=labels[lo:hi], palette_segments=palette_segments,
-            zoom=group["segments"][0]["zoom"], camera_bias=group["segments"][0]["camera_bias"],
-        ))
+        slots.append(
+            dict(
+                name=group["name"],
+                poses=poses,
+                energies=energies,
+                latencies_ms=latencies,
+                pen_up=pen_up[lo:hi],
+                labels=labels[lo:hi],
+                palette_segments=palette_segments,
+                zoom=group["segments"][0]["zoom"],
+                camera_bias=group["segments"][0]["camera_bias"],
+                speed=group["segments"][0]["speed"],
+            )
+        )
 
-    fig = build_multi_dancer_figure(slots)
+    fig, frame_audio = build_multi_dancer_figure(slots)
 
     total_steps = sum(len(s["energies"]) for s in slots)
     longest = max(len(s["energies"]) for s in slots)
@@ -398,18 +577,28 @@ def run_show(backend, frames: np.ndarray, states: np.ndarray):
         f"per new length); every loop after that reuses the compiled kernels and is "
         f"fast."
     )
-    return fig, report
+    return fig, frame_audio, report
 
 
-def wrap_iframe(fig, height: int = 600, auto_loop: bool = False) -> str:
+def wrap_iframe(fig, height: int = 600, auto_loop: bool = False, frame_audio: list | None = None) -> str:
     """Wraps a plotly Figure as a self-contained <iframe srcdoc="...">, with the
     Orbitron import carried along (the iframe's document doesn't inherit the outer
     page's <head>). See the TANZEN tab's original comment for why an iframe is needed
     at all instead of gr.Plot/gr.HTML directly. `auto_loop` appends AUTO_LOOP_SCRIPT so
-    the animation restarts itself forever instead of stopping after one pass."""
+    the animation restarts itself forever instead of stopping after one pass.
+
+    `frame_audio` (Show tab only): the per-frame sonification metadata from
+    build_multi_dancer_figure. When given, it takes over looping entirely -- injects
+    it as `FRAME_AUDIO` plus SHOW_AUTO_LOOP_SCRIPT (the audio-aware, step-by-step
+    player) instead of the plain AUTO_LOOP_SCRIPT, and `auto_loop` is ignored."""
     doc = fig.to_html(full_html=True, include_plotlyjs="cdn")
     doc = doc.replace("<head>", f"<head><style>{KRAFTWERK_FONT_IMPORT} body{{margin:0}}</style>", 1)
-    if auto_loop:
+    if frame_audio is not None:
+        import json
+
+        script = f"<script>const FRAME_AUDIO = {json.dumps(frame_audio)};</script>" + SHOW_AUTO_LOOP_SCRIPT
+        doc = doc.replace("</body>", script + "</body>", 1)
+    elif auto_loop:
         doc = doc.replace("</body>", AUTO_LOOP_SCRIPT + "</body>", 1)
     return (
         f'<iframe srcdoc="{html_lib.escape(doc, quote=True)}" '
@@ -420,7 +609,11 @@ def wrap_iframe(fig, height: int = 600, auto_loop: bool = False) -> str:
 def build_app(backend):
     frames, states = load_example()
 
-    with gr.Blocks(title="V-JEPA2-AC on Blackhole") as demo:
+    with gr.Blocks(
+        title="V-JEPA2-AC on Blackhole",
+        theme=gr.themes.Base(primary_hue="pink", neutral_hue="gray"),
+        css=TT_BRAND_CSS,
+    ) as demo:
         gr.Markdown(
             "# We Are The Robots\n"
             "### V-JEPA2-AC — an action-conditioned world model, on Tenstorrent Blackhole\n"
@@ -444,8 +637,8 @@ def build_app(backend):
             report0 = gr.Markdown()
 
             def run_show_html():
-                fig, report = run_show(backend, frames, states)
-                return wrap_iframe(fig, height=620, auto_loop=True), report
+                fig, frame_audio, report = run_show(backend, frames, states)
+                return wrap_iframe(fig, height=620, frame_audio=frame_audio), report
 
             btn0.click(run_show_html, outputs=[plot0, report0])
         with gr.Tab("Grounded Check"):
@@ -465,7 +658,8 @@ def build_app(backend):
                 "choreography can take a few minutes the first time. After that, "
                 "every one of those lengths is in the TTNN kernel cache and repeat "
                 "runs are fast. Start short, then lengthen it._\n\n"
-                "| Move | What it does |\n|---|---|\n" + "\n".join(
+                "| Move | What it does |\n|---|---|\n"
+                + "\n".join(
                     f"| **{name}** | {' '.join(fn.__doc__.split(' -- ', 1)[-1].split()).split('. ')[0].rstrip('.')} |"
                     for name, fn in MOVES.items()
                 )
@@ -511,8 +705,11 @@ def build_app(backend):
             btn3 = gr.Button("Run CEM", variant="primary")
             plot3 = gr.Plot(label="CEM Convergence")
             report3 = gr.Markdown()
-            btn3.click(lambda *a: run_cem_plan(backend, frames, states, *a),
-                       inputs=[cem_steps, cem_samples, cem_topk, cem_maxnorm], outputs=[plot3, report3])
+            btn3.click(
+                lambda *a: run_cem_plan(backend, frames, states, *a),
+                inputs=[cem_steps, cem_samples, cem_topk, cem_maxnorm],
+                outputs=[plot3, report3],
+            )
     return demo
 
 
@@ -525,14 +722,16 @@ def main():
 
     if args.backend == "ttnn":
         from backends import TTNNBackend
+
         backend = TTNNBackend(device_id=args.device_id)
     else:
         from backends import ReferenceBackend
+
         backend = ReferenceBackend()
 
     demo = build_app(backend)
     try:
-        demo.launch(share=args.share, theme=gr.themes.Base(primary_hue="pink", neutral_hue="gray"), css=TT_BRAND_CSS)
+        demo.launch(share=args.share)
     finally:
         if hasattr(backend, "close"):
             backend.close()

@@ -6,7 +6,6 @@ real (stripped) checkpoint weights. Same small synthetic clip as the single-bloc
 (fast iteration); scaling to the full advertised 64-frame/384px clip is the next stage,
 not this one -- this stage proves the block stack composes correctly end to end."""
 
-import os
 import sys
 from pathlib import Path
 
@@ -14,18 +13,13 @@ import torch
 
 import ttnn
 
-# Requires: `git clone https://github.com/facebookresearch/vjepa2 reference` at the repo
-# root, and TT_METAL_HOME set to a tt-metal checkout (for `ttnn` + `models.common.*`).
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "reference"))
+AUTOPORT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(AUTOPORT / "reference"))
 
 from src.models.vision_transformer import VisionTransformer  # noqa: E402
 
-TT_METAL_HOME = os.environ.get("TT_METAL_HOME")
-if not TT_METAL_HOME:
-    raise RuntimeError("Set TT_METAL_HOME to a tt-metal checkout before running this script.")
-sys.path.insert(0, TT_METAL_HOME)
-sys.path.insert(0, str(REPO_ROOT))  # REPO_ROOT/tt/ is the "tt" package itself
+sys.path.insert(0, str(AUTOPORT.parent.parent.parent))
+sys.path.insert(0, str(AUTOPORT))  # AUTOPORT/tt/ is the "tt" package itself
 
 from tt.functional_encoder import VJEPA2Encoder, VJEPA2EncoderConfig  # noqa: E402
 from tt.test_functional_encoder import CKPT_PATH, pcc  # noqa: E402
@@ -48,9 +42,18 @@ def main():
     pixel_values = torch.randn(B, C, T, Hpx, Wpx)
 
     ref = VisionTransformer(
-        img_size=Hpx, patch_size=cfg.patch_size, num_frames=T, tubelet_size=cfg.tubelet_size,
-        in_chans=cfg.in_chans, embed_dim=cfg.hidden_size, depth=cfg.num_layers, num_heads=cfg.num_heads,
-        mlp_ratio=cfg.mlp_ratio, qkv_bias=True, use_rope=True, use_sdpa=True,
+        img_size=Hpx,
+        patch_size=cfg.patch_size,
+        num_frames=T,
+        tubelet_size=cfg.tubelet_size,
+        in_chans=cfg.in_chans,
+        embed_dim=cfg.hidden_size,
+        depth=cfg.num_layers,
+        num_heads=cfg.num_heads,
+        mlp_ratio=cfg.mlp_ratio,
+        qkv_bias=True,
+        use_rope=True,
+        use_sdpa=True,
     )
     ref.eval()
     missing, unexpected = ref.load_state_dict(

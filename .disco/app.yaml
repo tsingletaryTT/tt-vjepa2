@@ -1,0 +1,5 @@
+name: vjepa2
+description: V-JEPA2 video embedding & robot-planning demo (grounded prediction, imagined dance, CEM planning)
+port: 7861
+chips: 1
+launch: bash -c 'export TT_METAL_HOME=/home/ttuser/code/tt-metal-vjepa2-bringup GRADIO_SERVER_PORT=7861; exec .venv/bin/python3 gradio_app/app.py'

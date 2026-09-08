@@ -162,10 +162,10 @@ def build_show():
     act performance that plays start to finish and loops, each act with its own
     palette/camera framing (interpreted by robot_viz.py using the metadata below), not
     a single continuous wiggle. Returns (actions [N,7], pen_up [N] bool, labels [N] str,
-    act_segments [{name,start,end,palette,zoom,camera_bias}, ...])."""
+    act_segments [{name,start,end,palette,zoom,camera_bias,speed}, ...])."""
     acts = []
 
-    def add(name, actions, palette, zoom, camera_bias, pen_up=None, labels=None, loops=1):
+    def add(name, actions, palette, zoom, camera_bias, pen_up=None, labels=None, loops=1, speed=1.0):
         # Repeating a short motion (rather than authoring one long pass) is how each
         # act gets to linger without growing the show's total step count much -- and
         # total step count is a real budget here, not a style choice: each distinct
@@ -175,52 +175,105 @@ def build_show():
         # show already found that ceiling once. Most of these moves are themselves
         # roughly periodic (sin-based, or symmetric-phase), so repeating them reads as
         # "doing the move again", not a drift away from where it started.
+        #
+        # `speed`: playback-speed multiplier (>1 faster, <1 slower) -- purely a
+        # presentation choice for robot_viz.py's per-frame duration, not something
+        # that changes the actual rollout. A millimeter-scale act (Grain of Rice)
+        # needs a slower frame duration or its gesture reads as a single blink.
         actions = np.tile(actions, (loops, 1)).astype(np.float32)
         n = len(actions)
         if pen_up is not None:
             pen_up = np.tile(pen_up, loops)
         if labels is not None:
             labels = list(labels) * loops
-        acts.append(dict(
-            name=name, actions=actions,
-            pen_up=pen_up if pen_up is not None else np.zeros(n, dtype=bool),
-            labels=labels if labels is not None else [name] * n,
-            palette=palette, zoom=zoom, camera_bias=camera_bias,
-        ))
+        acts.append(
+            dict(
+                name=name,
+                actions=actions,
+                pen_up=pen_up if pen_up is not None else np.zeros(n, dtype=bool),
+                labels=labels if labels is not None else [name] * n,
+                palette=palette,
+                zoom=zoom,
+                camera_bias=camera_bias,
+                speed=speed,
+            )
+        )
 
-    add("INSTANT KRAFTWERK",
+    add(
+        "INSTANT KRAFTWERK",
         np.concatenate([move_figure_eight(2), move_spin(2, total_yaw=0.4)]),
-        palette="red", zoom=1.7, camera_bias=(1.0, 1.0, 0.6), loops=2)
+        palette="red",
+        zoom=1.7,
+        camera_bias=(1.0, 1.0, 0.6),
+        loops=2,
+    )
 
-    add("CAREFUL WITH THAT AX, EUGENE",
+    add(
+        "CAREFUL WITH THAT AX, EUGENE",
         move_bow(3, depth=0.02, tilt=0.15),
-        palette="cool", zoom=2.1, camera_bias=(0.3, 1.8, 0.3))
-    add("CAREFUL WITH THAT AX, EUGENE",
+        palette="cool",
+        zoom=2.1,
+        camera_bias=(0.3, 1.8, 0.3),
+    )
+    add(
+        "CAREFUL WITH THAT AX, EUGENE",
         move_axe_swing(2),
-        palette="flash", zoom=1.1, camera_bias=(1.8, 0.3, 1.4), loops=2)
+        palette="flash",
+        zoom=1.1,
+        camera_bias=(1.8, 0.3, 1.4),
+        loops=2,
+    )
 
-    add("TANGERINE RATCHET",
+    add(
+        "TANGERINE RATCHET",
         np.concatenate([move_spin(1, total_yaw=0.3), move_snap(1)]),
-        palette="tangerine", zoom=1.5, camera_bias=(1.6, 1.6, 0.2), loops=3)
+        palette="tangerine",
+        zoom=1.5,
+        camera_bias=(1.6, 1.6, 0.2),
+        loops=3,
+    )
 
-    add("POPPIN AND LOCKIN",
+    add(
+        "POPPIN AND LOCKIN",
         np.concatenate([move_snap(1), move_freeze(1)]),
-        palette="red", zoom=1.4, camera_bias=(0.2, 1.8, 0.9), loops=3)
+        palette="red",
+        zoom=1.4,
+        camera_bias=(0.2, 1.8, 0.9),
+        loops=3,
+    )
 
-    add("YOUR NAME ON A GRAIN OF RICE",
+    add(
+        "YOUR NAME ON A GRAIN OF RICE",
         move_wave(2, amp=0.006),
-        palette="micro", zoom=0.55, camera_bias=(0.4, 0.4, 0.25), loops=2)
+        palette="micro",
+        zoom=0.55,
+        camera_bias=(0.4, 0.4, 0.25),
+        loops=2,
+        speed=0.4,
+    )
 
-    add("LASER CATS CUTTING A RUG",
+    add(
+        "LASER CATS CUTTING A RUG",
         np.concatenate([move_figure_eight(2, amp=0.05), move_spin(2, total_yaw=0.6)]),
-        palette="rainbow", zoom=1.3, camera_bias=(1.9, 0.6, 1.1), loops=2)
+        palette="rainbow",
+        zoom=1.3,
+        camera_bias=(1.9, 0.6, 1.1),
+        loops=2,
+    )
 
     letters_actions, letters_pen_up, letters_labels = build_letters("XOXO TT")
     # Letters are traced in the world X-Z plane (see build_letters) -- the camera needs
     # to face that plane roughly along Y, and specifically from -Y looking toward +Y,
     # for the advance direction (+x) to read as screen-right rather than mirrored.
-    add("XOXO TT", letters_actions, palette="rainbow", zoom=1.5, camera_bias=(0.2, -1.7, 0.2),
-        pen_up=letters_pen_up, labels=letters_labels)
+    add(
+        "XOXO TT",
+        letters_actions,
+        palette="rainbow",
+        zoom=1.5,
+        camera_bias=(0.2, -1.7, 0.2),
+        pen_up=letters_pen_up,
+        labels=letters_labels,
+    )
 
     all_actions = np.concatenate([a["actions"] for a in acts], axis=0)
     all_pen_up = np.concatenate([a["pen_up"] for a in acts], axis=0)
@@ -229,8 +282,17 @@ def build_show():
     cursor = 0
     for a in acts:
         n = len(a["actions"])
-        act_segments.append(dict(name=a["name"], start=cursor, end=cursor + n,
-                                  palette=a["palette"], zoom=a["zoom"], camera_bias=a["camera_bias"]))
+        act_segments.append(
+            dict(
+                name=a["name"],
+                start=cursor,
+                end=cursor + n,
+                palette=a["palette"],
+                zoom=a["zoom"],
+                camera_bias=a["camera_bias"],
+                speed=a["speed"],
+            )
+        )
         cursor += n
     return all_actions, all_pen_up, all_labels, act_segments
 

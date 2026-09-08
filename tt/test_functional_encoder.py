@@ -8,7 +8,6 @@ PCC >= 0.995 is the acceptance bar (ttm-functional-decoder's default), even thou
 is an encoder not a decoder -- the bar itself doesn't depend on causal-vs-bidirectional.
 """
 
-import os
 import sys
 from pathlib import Path
 
@@ -16,18 +15,13 @@ import torch
 
 import ttnn
 
-# Requires: `git clone https://github.com/facebookresearch/vjepa2 reference` at the repo
-# root, and TT_METAL_HOME set to a tt-metal checkout (for `ttnn` + `models.common.*`).
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "reference"))
+AUTOPORT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(AUTOPORT / "reference"))
 
 from src.models.utils.modules import Block  # noqa: E402
 
-TT_METAL_HOME = os.environ.get("TT_METAL_HOME")
-if not TT_METAL_HOME:
-    raise RuntimeError("Set TT_METAL_HOME to a tt-metal checkout before running this script.")
-sys.path.insert(0, TT_METAL_HOME)
-sys.path.insert(0, str(REPO_ROOT))  # REPO_ROOT/tt/ is the "tt" package itself
+sys.path.insert(0, str(AUTOPORT.parent.parent.parent))  # tt-metal-shaped root, for `models.*`
+sys.path.insert(0, str(AUTOPORT))  # AUTOPORT/tt/ is the "tt" package itself
 
 from tt.functional_encoder import (  # noqa: E402
     EncoderBlock,
@@ -62,7 +56,9 @@ def main():
 
     # -- reference: patch embed (torch Conv3d) + one Block --
     ref_patch_embed = torch.nn.Conv3d(
-        cfg.in_chans, cfg.hidden_size, kernel_size=(cfg.tubelet_size, cfg.patch_size, cfg.patch_size),
+        cfg.in_chans,
+        cfg.hidden_size,
+        kernel_size=(cfg.tubelet_size, cfg.patch_size, cfg.patch_size),
         stride=(cfg.tubelet_size, cfg.patch_size, cfg.patch_size),
     )
     ref_patch_embed.weight.data = sd["module.patch_embed.proj.weight"]
@@ -70,8 +66,13 @@ def main():
     ref_tokens = ref_patch_embed(pixel_values).flatten(2).transpose(1, 2)  # (B, N, C)
 
     ref_block = Block(
-        dim=cfg.hidden_size, num_heads=cfg.num_heads, mlp_ratio=cfg.mlp_ratio, qkv_bias=True,
-        use_rope=True, grid_size=cfg.grid_size, use_sdpa=True,
+        dim=cfg.hidden_size,
+        num_heads=cfg.num_heads,
+        mlp_ratio=cfg.mlp_ratio,
+        qkv_bias=True,
+        use_rope=True,
+        grid_size=cfg.grid_size,
+        use_sdpa=True,
     )
     ref_block.eval()
     ref_block.load_state_dict(

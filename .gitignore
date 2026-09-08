@@ -1,3 +1,9 @@
 __pycache__/
 *.pyc
 generated/
+
+# Runtime prerequisites documented in the README, cloned/built locally --
+# never tracked here (the reference clone is a separate git repo in its own
+# right; get it via `git clone https://github.com/facebookresearch/vjepa2 reference`).
+.venv/
+/reference/

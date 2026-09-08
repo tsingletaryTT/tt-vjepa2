@@ -23,10 +23,19 @@ def l2(a: torch.Tensor, b: torch.Tensor) -> float:
     return float(torch.mean((a - b) ** 2).sqrt())
 
 
-def cem_search(backend, rep0: torch.Tensor, pose0: np.ndarray, goal_rep: torch.Tensor,
-               cem_steps: int = 6, samples: int = 12, topk: int = 4,
-               maxnorm: float = 0.05, gripper_std: float = 0.3,
-               momentum_mean: float = 0.25, momentum_std: float = 0.6):
+def cem_search(
+    backend,
+    rep0: torch.Tensor,
+    pose0: np.ndarray,
+    goal_rep: torch.Tensor,
+    cem_steps: int = 6,
+    samples: int = 12,
+    topk: int = 4,
+    maxnorm: float = 0.05,
+    gripper_std: float = 0.3,
+    momentum_mean: float = 0.25,
+    momentum_std: float = 0.6,
+):
     """Returns (final_action [7], history) where history is a list of per-iteration
     {step, best_error, mean_error, mean_action} dicts -- everything needed to plot
     convergence and report the final result."""
@@ -59,12 +68,14 @@ def cem_search(backend, rep0: torch.Tensor, pose0: np.ndarray, goal_rep: torch.T
         std = new_std * (1 - momentum_std) + std * momentum_std
 
         best_idx = errors.argmin()
-        history.append({
-            "step": step,
-            "best_error": float(errors.min()),
-            "mean_error": float(errors.mean()),
-            "best_candidate": candidates[best_idx, :4].tolist(),
-        })
+        history.append(
+            {
+                "step": step,
+                "best_error": float(errors.min()),
+                "mean_error": float(errors.mean()),
+                "best_candidate": candidates[best_idx, :4].tolist(),
+            }
+        )
 
     final_action = torch.zeros(7)
     final_action[:3] = mean[:3]

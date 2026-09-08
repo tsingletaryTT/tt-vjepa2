@@ -23,9 +23,7 @@ from dataclasses import dataclass
 import torch
 
 import ttnn
-
 from models.common.lightweightmodule import LightweightModule
-
 
 _USE_MANUAL_ATTENTION = False  # debug flag; see RoPEAttention.forward
 
@@ -99,8 +97,9 @@ class PatchEmbed3D(LightweightModule):
     no conv kernel needed. Each (tubelet_size, patch_size, patch_size) voxel becomes one
     flattened row multiplied by the conv weight reshaped to (embed_dim, in_chans*t*p*p)."""
 
-    def __init__(self, weight_out_in: "ttnn.Tensor", bias: "ttnn.Tensor", cfg: VJEPA2EncoderConfig, device,
-                 dtype=ttnn.float32):
+    def __init__(
+        self, weight_out_in: "ttnn.Tensor", bias: "ttnn.Tensor", cfg: VJEPA2EncoderConfig, device, dtype=ttnn.float32
+    ):
         self.weight = weight_out_in  # already (in_features, embed_dim) for ttnn.linear
         self.bias = bias
         self.cfg = cfg
@@ -189,8 +188,15 @@ def axis_positions_3d(gT: int, gH: int, gW: int, cfg) -> tuple:
     )
 
 
-def build_fused_rope_table(pos_d: torch.Tensor, pos_h: torch.Tensor, pos_w: torch.Tensor, cfg,
-                           device, dtype=ttnn.bfloat16, identity_mask: "torch.Tensor | None" = None) -> "ttnn.Tensor":
+def build_fused_rope_table(
+    pos_d: torch.Tensor,
+    pos_h: torch.Tensor,
+    pos_w: torch.Tensor,
+    cfg,
+    device,
+    dtype=ttnn.bfloat16,
+    identity_mask: "torch.Tensor | None" = None,
+) -> "ttnn.Tensor":
     """cos/sin spanning the FULL head_dim in one tensor (d/h/w segments block-concatenated,
     any leftover head_dim padded with an identity rotation), for use with
     `ttnn.experimental.rotary_embedding_llama` -- one fused device call per q/k instead of
@@ -294,7 +300,9 @@ class RoPEAttention(LightweightModule):
         # own primitive for this (models/common/modules/attention/attention_1d.py's
         # standard decoder pipeline uses it); verified bit-for-bit equivalent (max diff
         # 0.0156, ordinary bf16 rounding) against the manual reshape+permute it replaces.
-        qkv = ttnn.linear(x, self.qkv_w, bias=self.qkv_b, compute_kernel_config=_hifi_compute_kernel_config())  # (B, N, 3*H*D)
+        qkv = ttnn.linear(
+            x, self.qkv_w, bias=self.qkv_b, compute_kernel_config=_hifi_compute_kernel_config()
+        )  # (B, N, 3*H*D)
         qkv = ttnn.reshape(qkv, (batch, 1, seq_len, 3 * H * D))
         q, k, v = ttnn.experimental.nlp_create_qkv_heads(qkv, num_heads=H, transpose_k_heads=False)
 
@@ -353,8 +361,12 @@ class EncoderBlock(LightweightModule):
         # vs 0.9966 at real resolution) while keeping the bf16 weight/compute win.
         prefix = f"module.blocks.{layer_idx}"
         attn = RoPEAttention.from_state_dict(state_dict, prefix=prefix, cfg=cfg, device=device, dtype=dtype)
-        norm1 = _torch_norm_to_ttnn(state_dict[f"{prefix}.norm1.weight"], state_dict[f"{prefix}.norm1.bias"], device, dtype)
-        norm2 = _torch_norm_to_ttnn(state_dict[f"{prefix}.norm2.weight"], state_dict[f"{prefix}.norm2.bias"], device, dtype)
+        norm1 = _torch_norm_to_ttnn(
+            state_dict[f"{prefix}.norm1.weight"], state_dict[f"{prefix}.norm1.bias"], device, dtype
+        )
+        norm2 = _torch_norm_to_ttnn(
+            state_dict[f"{prefix}.norm2.weight"], state_dict[f"{prefix}.norm2.bias"], device, dtype
+        )
         fc1_w, fc1_b = _torch_linear_to_ttnn(
             state_dict[f"{prefix}.mlp.fc1.weight"], state_dict[f"{prefix}.mlp.fc1.bias"], device, ttnn.bfloat16
         )
@@ -367,12 +379,16 @@ class EncoderBlock(LightweightModule):
         eps = self.cfg.layer_norm_eps
         residual_dtype = x.dtype
         residual = x
-        h = ttnn.layer_norm(x, weight=self.norm1_w, bias=self.norm1_b, epsilon=eps, compute_kernel_config=_hifi_compute_kernel_config())
+        h = ttnn.layer_norm(
+            x, weight=self.norm1_w, bias=self.norm1_b, epsilon=eps, compute_kernel_config=_hifi_compute_kernel_config()
+        )
         h = self.attn(h, rope_tables, batch, seq_len)  # returns residual_dtype already
         x = residual + h
 
         residual = x
-        h = ttnn.layer_norm(x, weight=self.norm2_w, bias=self.norm2_b, epsilon=eps, compute_kernel_config=_hifi_compute_kernel_config())
+        h = ttnn.layer_norm(
+            x, weight=self.norm2_w, bias=self.norm2_b, epsilon=eps, compute_kernel_config=_hifi_compute_kernel_config()
+        )
         h = ttnn.typecast(h, ttnn.bfloat16)
         h = ttnn.linear(h, self.fc1_w, bias=self.fc1_b, compute_kernel_config=_hifi_compute_kernel_config())
         h = ttnn.gelu(h)
@@ -387,8 +403,9 @@ class VJEPA2Encoder(LightweightModule):
     device mesh; every token attends to every token in one forward pass (no cache, no
     prefill/decode split -- see module docstring for why that's the right shape here)."""
 
-    def __init__(self, patch_embed: PatchEmbed3D, blocks: list, final_norm, cfg: VJEPA2EncoderConfig, device,
-                 dtype=ttnn.float32):
+    def __init__(
+        self, patch_embed: PatchEmbed3D, blocks: list, final_norm, cfg: VJEPA2EncoderConfig, device, dtype=ttnn.float32
+    ):
         self.patch_embed = patch_embed
         self.blocks = blocks
         self.final_norm_w, self.final_norm_b = final_norm
@@ -403,7 +420,9 @@ class VJEPA2Encoder(LightweightModule):
             EncoderBlock.from_state_dict(state_dict, layer_idx=i, cfg=cfg, device=device, dtype=dtype)
             for i in range(cfg.num_layers)
         ]
-        final_norm = _torch_norm_to_ttnn(state_dict["module.norm.weight"], state_dict["module.norm.bias"], device, dtype)
+        final_norm = _torch_norm_to_ttnn(
+            state_dict["module.norm.weight"], state_dict["module.norm.bias"], device, dtype
+        )
         return cls(patch_embed, blocks, final_norm, cfg, device, dtype=dtype)
 
     def prepare_input(self, pixel_values: torch.Tensor) -> tuple:
@@ -445,8 +464,13 @@ class VJEPA2Encoder(LightweightModule):
         rope_tables = self.get_rope_tables(gT, gH, gW)
         for block in self.blocks:
             x = block(x, rope_tables, batch, seq_len)
-        x = ttnn.layer_norm(x, weight=self.final_norm_w, bias=self.final_norm_b, epsilon=cfg.layer_norm_eps,
-                             compute_kernel_config=_hifi_compute_kernel_config())
+        x = ttnn.layer_norm(
+            x,
+            weight=self.final_norm_w,
+            bias=self.final_norm_b,
+            epsilon=cfg.layer_norm_eps,
+            compute_kernel_config=_hifi_compute_kernel_config(),
+        )
         return x
 
     def forward(self, pixel_values: torch.Tensor) -> "ttnn.Tensor":

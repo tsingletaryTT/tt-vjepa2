@@ -61,24 +61,56 @@ class ReferenceBackend:
         enc_sd = {k: v.float() for k, v in enc_sd.items()}
         pred_sd = {k: v.float() for k, v in pred_sd.items()}
 
-        self.encoder = VisionTransformer(
-            img_size=IMG_SIZE, patch_size=PATCH_SIZE, num_frames=TUBELET_SIZE, tubelet_size=TUBELET_SIZE,
-            in_chans=3, embed_dim=1408, depth=40, num_heads=22, mlp_ratio=4.363636363636363,
-            qkv_bias=True, use_rope=True, use_sdpa=True,
-        ).eval().to(device)
-        self.encoder.load_state_dict({k[len("module.") :]: v for k, v in enc_sd.items() if k.startswith("module.")}, strict=False)
+        self.encoder = (
+            VisionTransformer(
+                img_size=IMG_SIZE,
+                patch_size=PATCH_SIZE,
+                num_frames=TUBELET_SIZE,
+                tubelet_size=TUBELET_SIZE,
+                in_chans=3,
+                embed_dim=1408,
+                depth=40,
+                num_heads=22,
+                mlp_ratio=4.363636363636363,
+                qkv_bias=True,
+                use_rope=True,
+                use_sdpa=True,
+            )
+            .eval()
+            .to(device)
+        )
+        self.encoder.load_state_dict(
+            {k[len("module.") :]: v for k, v in enc_sd.items() if k.startswith("module.")}, strict=False
+        )
 
         # `num_frames` here sizes the predictor's precomputed frame-causal attention
         # mask (sliced down to the actual sequence length at forward time, see
         # VisionTransformerPredictorAC.forward) -- it must cover the longest rollout
         # this backend will be asked to do, i.e. TUBELET_SIZE * max_steps frames, not
         # the single starting frame.
-        self.predictor = VisionTransformerPredictorAC(
-            img_size=IMG_SIZE, patch_size=PATCH_SIZE, num_frames=TUBELET_SIZE * max_steps, tubelet_size=TUBELET_SIZE,
-            embed_dim=1408, predictor_embed_dim=1024, depth=24, num_heads=16, mlp_ratio=4.0,
-            qkv_bias=True, is_frame_causal=True, use_rope=True, action_embed_dim=7, use_extrinsics=False,
-        ).eval().to(device)
-        self.predictor.load_state_dict({k[len("module.") :]: v for k, v in pred_sd.items() if k.startswith("module.")}, strict=False)
+        self.predictor = (
+            VisionTransformerPredictorAC(
+                img_size=IMG_SIZE,
+                patch_size=PATCH_SIZE,
+                num_frames=TUBELET_SIZE * max_steps,
+                tubelet_size=TUBELET_SIZE,
+                embed_dim=1408,
+                predictor_embed_dim=1024,
+                depth=24,
+                num_heads=16,
+                mlp_ratio=4.0,
+                qkv_bias=True,
+                is_frame_causal=True,
+                use_rope=True,
+                action_embed_dim=7,
+                use_extrinsics=False,
+            )
+            .eval()
+            .to(device)
+        )
+        self.predictor.load_state_dict(
+            {k[len("module.") :]: v for k, v in pred_sd.items() if k.startswith("module.")}, strict=False
+        )
 
     def encode_frame(self, frame_uint8: np.ndarray) -> torch.Tensor:
         clip = _normalize_frame(frame_uint8).to(self.device)
@@ -112,10 +144,10 @@ class TTNNBackend:
         sys.path.insert(0, tt_metal_home)
         sys.path.insert(0, str(REPO_ROOT))
 
-        import ttnn
-
         from tt.functional_encoder import VJEPA2Encoder, VJEPA2EncoderConfig
         from tt.functional_predictor import VJEPA2Predictor, VJEPA2PredictorConfig
+
+        import ttnn
 
         self.ttnn = ttnn
         self.device = ttnn.open_device(device_id=device_id)
@@ -140,7 +172,9 @@ class TTNNBackend:
     def predict_step(self, reps: torch.Tensor, actions: torch.Tensor, states: torch.Tensor):
         B, T, N_T, D = reps.shape
         flat = reps.reshape(B, T * N_T, D)
-        context_tt = self.ttnn.from_torch(flat, dtype=self.ttnn.float32, layout=self.ttnn.TILE_LAYOUT, device=self.device)
+        context_tt = self.ttnn.from_torch(
+            flat, dtype=self.ttnn.float32, layout=self.ttnn.TILE_LAYOUT, device=self.device
+        )
         t0 = time.perf_counter()
         out_tt = self.predictor.forward(context_tt, actions, states, T, GRID, GRID)
         self.ttnn.synchronize_device(self.device)
