@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
-"""Two interchangeable model backends for the demo app: one that runs our TTNN port
-on real Blackhole hardware (local use, needs a gozer lease held by the caller), and one
+"""Three interchangeable model backends for the demo app: one that runs our TTNN port
+on real Blackhole hardware (local use, needs a gozer lease held by the caller), one
 that runs the unmodified reference PyTorch implementation on CPU (what an HF Space
-without Tenstorrent hardware would use). Same interface, so the app doesn't care which
-one is driving it.
+without Tenstorrent hardware would use), and one that talks to the standalone ASGI
+service (service/main.py) over HTTP instead of holding a backend in-process. Same
+interface, so the app doesn't care which one is driving it.
 
 Both implement the imagination-rollout pattern from Meta's own
 `reference/notebooks/utils/world_model_wrapper.py::WorldModel`: encode a real starting
@@ -21,7 +22,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-REPO_ROOT = Path(__file__).resolve().parent.parent  # facebook_vjepa2_vitg_fpc64_384/
+REPO_ROOT = Path(__file__).resolve().parent.parent  # repo root
 CKPT_PATH = "/home/ttuser/.cache/vjepa2/vjepa2-ac-vitg.inference.pt"
 
 PATCH_SIZE = 16
@@ -182,3 +183,54 @@ class TTNNBackend:
         out = self.ttnn.to_torch(out_tt).reshape(B, T, N_T, D)
         next_rep = out[:, -1]
         return F.layer_norm(next_rep, (next_rep.size(-1),)), latency_ms
+
+
+class RemoteBackend:
+    """HTTP client for the standalone ASGI service (service/main.py) -- the device and
+    its gozer lease live in that separate process, not here. Implements the same duck
+    type as ReferenceBackend/TTNNBackend so callers (planning.py, app.py's rollout
+    functions) don't need to know or care which backend they're driving.
+
+    Wire convention: the service's primitives omit the leading batch-of-1 dimension
+    the in-process calls use (reps is [T,HW,D] on the wire, not [1,T,HW,D]) -- this
+    class adds it back on responses and strips it on requests. See
+    docs/superpowers/specs/2026-09-08-asgi-service-design.md for the full contract.
+    """
+
+    name = "remote"
+
+    def __init__(self, base_url: str = "http://127.0.0.1:8000", client=None, timeout: float = 120.0):
+        """`client`: an httpx.Client (or a duck-typed stand-in, e.g.
+        starlette.testclient.TestClient) to use instead of opening a real connection to
+        `base_url` -- for testing against the service app in-process."""
+        if client is not None:
+            self._client = client
+        else:
+            import httpx
+
+            self._client = httpx.Client(base_url=base_url, timeout=timeout)
+
+    def close(self):
+        self._client.close()
+
+    def encode_frame(self, frame_uint8: np.ndarray) -> torch.Tensor:
+        sys.path.insert(0, str(REPO_ROOT / "service"))
+        from wire import frame_to_b64, tensor_from_b64
+
+        resp = self._client.post("/encode", json={"frame_png_b64": frame_to_b64(frame_uint8)})
+        resp.raise_for_status()
+        return tensor_from_b64(resp.json()["rep"]).unsqueeze(0)
+
+    def predict_step(self, reps: torch.Tensor, actions: torch.Tensor, states: torch.Tensor):
+        sys.path.insert(0, str(REPO_ROOT / "service"))
+        from wire import tensor_from_b64, tensor_to_b64
+
+        body = {
+            "reps": tensor_to_b64(reps.squeeze(0)),
+            "actions": actions.squeeze(0).tolist(),
+            "states": states.squeeze(0).tolist(),
+        }
+        resp = self._client.post("/predict_step", json=body)
+        resp.raise_for_status()
+        payload = resp.json()
+        return tensor_from_b64(payload["next_rep"]).unsqueeze(0), payload["latency_ms"]

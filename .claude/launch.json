@@ -6,6 +6,11 @@
       "runtimeExecutable": ".venv/bin/python3",
       "runtimeArgs": ["gradio_app/app.py", "--backend", "reference"],
       "port": 7860
+    },
+    {
+      "name": "vjepa2-gradio-attach",
+      "url": "http://127.0.0.1:7860",
+      "port": 7860
     }
   ]
 }

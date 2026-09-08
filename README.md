@@ -105,6 +105,7 @@ python tt/cpu_benchmark.py
 pip install gradio plotly scipy
 python gradio_app/app.py --backend ttnn        # real Blackhole hardware (default)
 python gradio_app/app.py --backend reference   # CPU, no tt-metal/hardware needed
+python gradio_app/app.py --backend remote --service-url http://127.0.0.1:8000  # ASGI service, see below
 ```
 
 Three tabs, all clearly labeled real-vs-imagined (the model predicts embeddings, never
@@ -124,6 +125,27 @@ pixels or joint angles):
   (`planning.py`), iteratively searching for the action that best predicts the real
   frame 1 from frame 0, then reporting how close it converges to the action that was
   actually taken.
+
+## ASGI service
+
+A standalone FastAPI service exposing the encoder/predictor/planner over HTTP, so
+other things can use this model without going through Gradio at all — Gradio itself
+can run as a client of it (`--backend remote` above). It owns the device exclusively
+and serializes every call onto a single dedicated worker, so any number of clients can
+share it safely. See
+[docs/superpowers/specs/2026-09-08-asgi-service-design.md](docs/superpowers/specs/2026-09-08-asgi-service-design.md)
+for the full design and wire format.
+
+```bash
+pip install fastapi uvicorn httpx safetensors pillow
+python service/main.py --backend ttnn        # real Blackhole hardware (default)
+python service/main.py --backend reference   # CPU, no tt-metal/hardware needed
+```
+
+Endpoints: `POST /encode` (frame → embedding), `POST /predict_step` (mirrors the
+in-process primitive exactly — the caller owns its own growing context), and
+`POST /plan_step` (goal-directed: CEM searches for a real action reaching a probed
+goal, wraps `planning.plan_step`).
 
 ## License
 

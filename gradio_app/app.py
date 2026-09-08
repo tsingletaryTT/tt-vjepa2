@@ -788,8 +788,10 @@ def build_app(backend):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--backend", choices=["ttnn", "reference"], default="ttnn")
+    parser.add_argument("--backend", choices=["ttnn", "reference", "remote"], default="ttnn")
     parser.add_argument("--device-id", type=int, default=0)
+    parser.add_argument("--service-url", default="http://127.0.0.1:8000",
+                         help="Base URL of the standalone ASGI service (service/main.py), used with --backend remote")
     parser.add_argument("--share", action="store_true")
     args = parser.parse_args()
 
@@ -797,6 +799,10 @@ def main():
         from backends import TTNNBackend
 
         backend = TTNNBackend(device_id=args.device_id)
+    elif args.backend == "remote":
+        from backends import RemoteBackend
+
+        backend = RemoteBackend(base_url=args.service_url)
     else:
         from backends import ReferenceBackend
 

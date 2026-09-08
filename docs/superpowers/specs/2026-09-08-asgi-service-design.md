@@ -146,7 +146,7 @@ caller sees the same exception text a direct in-process call would have raised.
    (no FastAPI needed for these).
 2. `service/worker.py` — the single-worker queue, tested with the stub backend
    (proves serialization without any HTTP layer).
-3. `service/app.py` — FastAPI endpoints wrapping the worker, tested via
+3. `service/main.py` — FastAPI endpoints wrapping the worker, tested via
    `httpx.ASGITransport`.
 4. `gradio_app/backends.py::RemoteBackend` — HTTP client implementing the backend duck
    type, tested against the FastAPI app in-process.
