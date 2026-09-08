@@ -39,7 +39,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from moves import MOVES, build_choreography, build_show  # noqa: E402
-from planning import cem_search  # noqa: E402
+from planning import cem_search, plan_step  # noqa: E402
 from robot_viz import build_dance_figure, build_multi_dancer_figure, integrate_pose  # noqa: E402
 
 # Injected into the iframe's own document (not the outer Gradio page) after the
@@ -477,30 +477,80 @@ def imagination_rollout(
     return poses, np.array(energies), np.array(latencies)
 
 
-def run_choreography(backend, frames: np.ndarray, states: np.ndarray, sequence: str, steps_per_move: int):
-    """Chains named moves (see moves.py) into one action sequence, then runs the same
-    imagination rollout every 'imagined' tab uses. Returns (plotly animated figure,
-    markdown report)."""
+def cem_imagination_rollout(
+    backend, start_frame: np.ndarray, start_pose: np.ndarray, target_actions: np.ndarray,
+    rep0: torch.Tensor | None = None, cem_steps: int = 6, samples: int = 12, topk: int = 4,
+    maxnorm: float = 0.12,
+):
+    """Sibling to imagination_rollout: instead of executing each of `target_actions`
+    verbatim, each is used only as goal-probing INTENT for planning.plan_step, which
+    lets CEM search for a real action reaching near that goal and executes what it
+    actually found -- the rendered trajectory is the model's own choice, target_actions
+    only ever supply intent. Same chaining, same return shape (poses [N+1,7],
+    energies [N], latencies_ms [N]), so it's a straight swap in run_choreography --
+    just slower, since every step now costs cem_steps+2 backend calls instead of 1."""
+    if rep0 is None:
+        rep0 = backend.encode_frame(start_frame)
+    reps = rep0.unsqueeze(1)  # [1,1,HW,D]
+    cur_pose = start_pose.copy()
+    poses = [start_pose.copy()]
+    prior_actions: list = []
+    states_seq = [start_pose]
+    energies, latencies = [], []
+    for target in target_actions:
+        found_action, next_rep, energy, latency_ms = plan_step(
+            backend, reps, prior_actions, states_seq, cur_pose, target,
+            cem_steps=cem_steps, samples=samples, topk=topk, maxnorm=maxnorm,
+        )
+        energies.append(energy)
+        latencies.append(latency_ms)
+        reps = torch.cat([reps, next_rep.unsqueeze(1)], dim=1)
+        prior_actions.append(found_action)
+        cur_pose = integrate_pose(cur_pose, found_action.reshape(1, 7))[-1]
+        states_seq.append(cur_pose)
+        poses.append(cur_pose.copy())
+    return np.stack(poses), np.array(energies), np.array(latencies)
+
+
+def run_choreography(backend, frames: np.ndarray, states: np.ndarray, sequence: str, steps_per_move: int,
+                      use_planning: bool = False):
+    """Chains named moves (see moves.py) into one action sequence. By default plays
+    each action back verbatim (imagination_rollout) -- the same imagined rollout every
+    'imagined' tab uses. With `use_planning=True`, each move's action is instead used
+    only as goal-probing intent for cem_imagination_rollout: CEM searches for a real
+    action reaching near that intent, and the model's own choice is what actually gets
+    executed and rendered -- slower, but genuinely model-chosen rather than scripted.
+    Returns (plotly animated figure, markdown report)."""
     steps_per_move = int(steps_per_move)
     actions, segments = build_choreography(sequence, steps_per_move)
     if len(actions) == 0:
         return None, (f"No recognized moves in `{sequence}`. Known moves: {', '.join(MOVES)}.")
     start_pose = states[0].copy()
-    poses, energies, latencies = imagination_rollout(backend, frames[0], start_pose, actions)
+    if use_planning:
+        poses, energies, latencies = cem_imagination_rollout(backend, frames[0], start_pose, actions)
+    else:
+        poses, energies, latencies = imagination_rollout(backend, frames[0], start_pose, actions)
 
     fig = build_dance_figure(poses, energies, latencies)
     segment_table = "| # | Move | Steps |\n|---|---|---|\n" + "\n".join(
         f"| {i + 1} | {name} | {start}–{end} |" for i, (name, start, end) in enumerate(segments)
     )
+    mode_note = (
+        "**Plan with CEM** is on: each move below supplied only the *intent* -- a real "
+        "CEM search (`planning.plan_step`) found the action actually executed at every "
+        "step, and that found action, not the authored curve, is what's rendered above."
+        if use_planning else
+        "Color = per-step imagined-embedding change (hue, biased red = bigger "
+        "change) and real measured latency (brightness). No ground-truth video "
+        "exists for this choreography -- the model is chaining its own predicted "
+        "embeddings forward across every move, exactly how CEM planning imagines "
+        "candidate futures in Meta's own reference implementation."
+    )
     report = (
         f"**Backend:** {backend.name} — {len(actions)} imagined steps across "
         f"{len(segments)} moves, {np.mean(latencies):.2f} ms/step avg predictor latency\n\n"
         f"{segment_table}\n\n"
-        f"Color = per-step imagined-embedding change (hue, biased red = bigger "
-        f"change) and real measured latency (brightness). No ground-truth video "
-        f"exists for this choreography -- the model is chaining its own predicted "
-        f"embeddings forward across every move, exactly how CEM planning imagines "
-        f"candidate futures in Meta's own reference implementation."
+        f"{mode_note}"
     )
     return fig, report
 
@@ -606,6 +656,19 @@ def wrap_iframe(fig, height: int = 600, auto_loop: bool = False, frame_audio: li
     )
 
 
+
+# TTNNBackend wraps a single ttnn.Device handle, which is not safe for concurrent
+# calls from multiple threads -- Gradio queues each button's own repeat clicks
+# (concurrency_limit=1 is per-listener by default), but nothing stops two DIFFERENT
+# tabs' handlers from running at once otherwise. Sharing one concurrency_id across
+# every backend-touching listener below serializes them against each other too, app-
+# wide, regardless of which tab. Discovered the hard way: three tabs' handlers ended
+# up mid-flight on the same device simultaneously (py-spy showed Show, Grounded Check,
+# and CEM Planning all blocked inside device calls at once), which from the outside
+# looked exactly like a hang.
+BACKEND_CONCURRENCY_ID = "ttnn-backend"
+
+
 def build_app(backend):
     frames, states = load_example()
 
@@ -640,7 +703,8 @@ def build_app(backend):
                 fig, frame_audio, report = run_show(backend, frames, states)
                 return wrap_iframe(fig, height=620, frame_audio=frame_audio), report
 
-            btn0.click(run_show_html, outputs=[plot0, report0])
+            btn0.click(run_show_html, outputs=[plot0, report0],
+                       concurrency_id=BACKEND_CONCURRENCY_ID, concurrency_limit=1)
         with gr.Tab("Grounded Check"):
             btn1 = gr.Button("Run on the Real Clip", variant="primary")
             with gr.Row():
@@ -648,7 +712,8 @@ def build_app(backend):
                 img1 = gr.Image(label="Frame 1 (real)")
             plot1 = gr.Plot(label="Prediction-Error Landscape")
             report1 = gr.Markdown()
-            btn1.click(lambda: run_grounded_check(backend, frames, states), outputs=[img0, img1, plot1, report1])
+            btn1.click(lambda: run_grounded_check(backend, frames, states), outputs=[img0, img1, plot1, report1],
+                       concurrency_id=BACKEND_CONCURRENCY_ID, concurrency_limit=1)
         with gr.Tab("Dance"):
             gr.Markdown(
                 "_Every step grows the context by one frame -- step N is a different "
@@ -669,6 +734,11 @@ def build_app(backend):
                 label="Choreography (move names, space-separated, repeats allowed)",
             )
             steps_per_move = gr.Slider(3, 10, value=4, step=1, label="Steps per Move")
+            plan_toggle = gr.Checkbox(
+                value=False,
+                label="Plan with CEM (slower, model-chosen -- each move supplies intent only; "
+                      "a real CEM search finds the action actually executed at every step)",
+            )
             btn2 = gr.Button("Compute Dance", variant="primary")
             # gr.Plot never calls Plotly.addFrames (Play button/slider render but do
             # nothing -- see the earlier fix). gr.HTML looked like the answer since
@@ -689,7 +759,9 @@ def build_app(backend):
                     return "", report
                 return wrap_iframe(fig, height=580, auto_loop=True), report
 
-            btn2.click(run_choreography_html, inputs=[sequence, steps_per_move], outputs=[plot2, report2])
+            btn2.click(run_choreography_html, inputs=[sequence, steps_per_move, plan_toggle],
+                       outputs=[plot2, report2],
+                       concurrency_id=BACKEND_CONCURRENCY_ID, concurrency_limit=1)
         with gr.Tab("CEM Planning"):
             gr.Markdown(
                 "_Instead of a scripted move, a real CEM optimizer (ported from Meta's "
@@ -709,6 +781,7 @@ def build_app(backend):
                 lambda *a: run_cem_plan(backend, frames, states, *a),
                 inputs=[cem_steps, cem_samples, cem_topk, cem_maxnorm],
                 outputs=[plot3, report3],
+                concurrency_id=BACKEND_CONCURRENCY_ID, concurrency_limit=1,
             )
     return demo
 

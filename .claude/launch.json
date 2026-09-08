@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "vjepa2-gradio",
+      "runtimeExecutable": ".venv/bin/python3",
+      "runtimeArgs": ["gradio_app/app.py", "--backend", "reference"],
+      "port": 7860
+    }
+  ]
+}
