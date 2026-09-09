@@ -13,9 +13,10 @@ small shared utilities (`models.common.lightweightmodule`,
 `models.common.tensor_utils`). It is not a standalone pip package.
 
 See [MODEL_CARD.md](MODEL_CARD.md) for intended use, evaluation data, and — stated
-plainly rather than glossed over — which of this model family's usual benchmarks
-(IntPhys 2, MVPBench, CausalVQA, real-robot success rate) have *not* been run against
-this port yet.
+plainly rather than glossed over — real results on the IntPhys 2 physical-reasoning
+benchmark (61.3% pairwise accuracy, 506 pairs, clearly above chance) alongside which of
+this model family's other usual benchmarks (MVPBench, CausalVQA, real-robot success
+rate) still have *not* been run against this port.
 
 ## Results
 
@@ -151,6 +152,24 @@ Endpoints: `POST /encode` (frame → embedding), `POST /predict_step` (mirrors t
 in-process primitive exactly — the caller owns its own growing context), and
 `POST /plan_step` (goal-directed: CEM searches for a real action reaching a probed
 goal, wraps `planning.plan_step`).
+
+## IntPhys 2 evaluation
+
+Runs the [IntPhys 2](https://huggingface.co/datasets/facebook/IntPhys2)
+violation-of-expectation benchmark against this port. See
+[MODEL_CARD.md](MODEL_CARD.md#quantitative-analyses) for the result and its
+methodology/caveats, and `scripts/eval_intphys2.py`'s docstring for the full
+adaptation notes.
+
+```bash
+pip install opencv-python-headless huggingface_hub
+python scripts/eval_intphys2.py --backend reference --split debug   # ~60 videos, quick sanity check
+python scripts/eval_intphys2.py --backend ttnn --split main --out results.json  # full 1,012-video public eval set
+```
+
+The dataset (1.82 GB, public `Main`/`Debug` splits) downloads automatically on first
+run via `huggingface_hub`. Raw per-video surprise scores from the run behind the
+Model Card's numbers are checked in at `scripts/results/`.
 
 ## License
 

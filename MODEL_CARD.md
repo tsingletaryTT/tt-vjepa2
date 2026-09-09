@@ -70,6 +70,12 @@ port** of Meta's model, not the original release — see
 - **Planning quality (this repo's own instrumentation, not a benchmark):** L2 distance
   in embedding space between a predicted and an actual real frame; CEM convergence
   curves toward a goal embedding.
+- **IntPhys 2 (`scripts/eval_intphys2.py`):** pairwise accuracy — is the impossible
+  video's mean L1 prediction "surprise" higher than its matched possible video's —
+  the same violation-of-expectation methodology
+  `facebookresearch/jepa-intuitive-physics` uses to evaluate V-JEPA models, adapted to
+  the action-conditioned predictor this repo has (see Quantitative Analyses for the
+  adaptation and its caveat).
 
 ## Evaluation Data
 
@@ -79,12 +85,18 @@ port** of Meta's model, not the original release — see
 - **Demo/Grounded Check:** a single real two-frame Franka arm clip and its recorded
   action, taken from Meta's own `energy_landscape_example.ipynb` notebook assets
   (`franka_example_traj.npz`) — one clip, not a benchmark suite.
-- **Not evaluated by this repo:** none of the physical/causal-reasoning benchmarks
-  this model family is normally reported against — IntPhys 2, MVPBench, CausalVQA
-  (all three introduced alongside V-JEPA2 specifically to evaluate this kind of
-  model), Something-Something v2, Epic-Kitchens-100, or a real-robot / LIBERO /
-  SimplerEnv success-rate trial. This is a real, currently-open gap, not an
-  oversight to gloss over — see Quantitative Analyses.
+- **IntPhys 2** ([`facebook/IntPhys2`](https://huggingface.co/datasets/facebook/IntPhys2)):
+  the public `Main` eval split (1,012 videos, 506 possible/impossible pairs). The
+  `HeldOut` split's ground truth is private (leaderboard-only), so this is a real,
+  methodologically-standard number on the public data — not an official leaderboard
+  submission.
+- **Not evaluated by this repo:** MVPBench and CausalVQA — both require a genuine
+  video-question-answering interface (text answers to questions about a video), which
+  needs a language decoder this repo doesn't have (that's what VL-JEPA/VLA-JEPA add on
+  top of a V-JEPA2-family encoder — see the descendant-model research this project did
+  before choosing IntPhys 2). Also not evaluated: Something-Something v2,
+  Epic-Kitchens-100, or a real-robot/LIBERO/SimplerEnv success-rate trial — named here
+  rather than silently dropped, so the gap stays visible.
 
 ## Training Data
 
@@ -111,13 +123,38 @@ single Blackhole chip):
 | Blackhole (TTNN, bf16-mixed, traced-replay) | 120.7 ms/forward | 66.3 input-frames/s | 1x |
 | same machine's CPU, reference PyTorch (fp32 eager) | 4293.2 ms/forward | 1.86 input-frames/s | ~35.6x slower |
 
-**What's missing, explicitly:** no results against IntPhys 2, MVPBench, CausalVQA, or
-a real-robot/LIBERO/SimplerEnv success-rate trial exist for this port. The Grounded
-Check and CEM convergence numbers surfaced in the demo app are real (not fabricated
-or cherry-picked) but are demo-quality evidence of "the port behaves sensibly," not
-benchmark-comparable claims of "abilities" in the sense the wider model family is
-normally evaluated. Closing this gap would mean running at least one of the named
-suites against this port, not adding more bespoke demo checks.
+**IntPhys 2** (public `Main` split, 506 possible/impossible pairs, TTNN backend,
+`scripts/results/intphys2_main_ttnn.json` has the raw per-video surprise scores):
+
+| | pairwise accuracy | n pairs |
+|---|---|---|
+| Overall | **0.613** | 506 |
+| by condition — permanence | 0.667 | |
+| by condition — continuity | 0.692 | |
+| by condition — immutability | 0.608 | |
+| by condition — solidity | 0.507 (chance) | |
+| by difficulty — Easy | 0.731 | |
+| by difficulty — Medium | 0.605 | |
+| by difficulty — Hard | 0.583 | |
+
+Chance is 0.5. At n=506, 0.613 is ~5 standard deviations above chance (binomial SD
+≈0.022) — not noise. The difficulty gradient (Easy > Medium > Hard) is the more
+convincing signal: a model with no real violation-of-expectation sensitivity would not
+reliably degrade with difficulty. **The zero-action proxy stated in Evaluation Data is
+a real methodological compromise, but empirically it isn't erasing the signal** — worth
+knowing precisely because an early 60-video debug run (`intphys2_debug_reference.json`)
+came back at exactly chance (0.500, n=30) and looked like it might indicate the proxy
+doesn't work at all; the full run showed that was an underpowered sample (binomial SD
+≈0.09 at n=30), not a real finding. One honest exception: **solidity is at chance** in
+the full run too — this port shows no measurable violation-of-expectation sensitivity
+for that specific physical property, stated plainly rather than averaged away by the
+overall number.
+
+**Still missing, explicitly:** MVPBench, CausalVQA, Something-Something v2,
+Epic-Kitchens-100, and any real-robot/LIBERO/SimplerEnv success-rate trial. The
+Grounded Check and CEM convergence numbers surfaced in the demo app remain real but
+demo-quality evidence, not benchmark-comparable claims, for whatever this port's
+abilities aren't covered by IntPhys 2 above.
 
 ## Ethical Considerations
 
