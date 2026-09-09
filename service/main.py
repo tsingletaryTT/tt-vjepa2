@@ -5,16 +5,23 @@ every device-touching call onto a single dedicated thread -- see worker.py's doc
 for why. Endpoints mirror the in-process primitives (encode_frame, predict_step) plus
 the higher-level plan_step, per docs/superpowers/specs/2026-09-08-asgi-service-design.md.
 
-Wire convention: every tensor/array omits the leading batch-of-1 dimension the
-in-process calls use (reps is [T,HW,D] on the wire, not [1,T,HW,D]) -- this module adds
-it back before calling the backend and strips it again before responding.
+Wire convention: /encode is always a single frame, so its response omits the
+leading batch-of-1 dimension the in-process call uses (rep is [HW,D] on the wire, not
+[1,HW,D]) -- this module adds it back before calling the backend and strips it again
+before responding. /predict_step's reps/actions/states/next_rep are NOT batch-stripped
+-- they travel as safetensors preserving whatever batch dimension the caller actually
+used, unchanged, because that batch dimension isn't always 1: planning.cem_search
+calls predict_step with the CEM sample count as the batch dim (see
+gradio_app/test_backends.py::test_remote_backend_predict_step_handles_batched_samples,
+added after a real 422 surfaced this -- an earlier version of this endpoint assumed
+batch-of-1 here too, which silently broke the CEM Planning tab and the Dance tab's
+"Plan with CEM" toggle under --backend remote).
 """
 
 import sys
 from pathlib import Path
 
 import numpy as np
-import torch
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -34,8 +41,8 @@ class EncodeResponse(BaseModel):
 
 class PredictStepRequest(BaseModel):
     reps: str
-    actions: list[list[float]]
-    states: list[list[float]]
+    actions: str
+    states: str
 
 
 class PredictStepResponse(BaseModel):
@@ -87,11 +94,11 @@ def create_app(backend) -> FastAPI:
     @app.post("/predict_step", response_model=PredictStepResponse)
     async def predict_step(req: PredictStepRequest):
         try:
-            reps = tensor_from_b64(req.reps).unsqueeze(0)
-            actions = torch.tensor(req.actions, dtype=torch.float32).unsqueeze(0)
-            states = torch.tensor(req.states, dtype=torch.float32).unsqueeze(0)
+            reps = tensor_from_b64(req.reps)
+            actions = tensor_from_b64(req.actions)
+            states = tensor_from_b64(req.states)
             next_rep, latency_ms = await worker.predict_step(reps, actions, states)
-            return PredictStepResponse(next_rep=tensor_to_b64(next_rep.squeeze(0)), latency_ms=latency_ms)
+            return PredictStepResponse(next_rep=tensor_to_b64(next_rep), latency_ms=latency_ms)
         except Exception as exc:
             return JSONResponse(status_code=500, content={"error": str(exc)})
 

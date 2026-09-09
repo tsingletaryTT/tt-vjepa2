@@ -80,25 +80,40 @@ enforced once, centrally, for every client rather than only Gradio's own tabs.
 
 ## API
 
-All endpoints are `POST`, JSON body except where noted. Every endpoint is single-session
-(batch size 1) — the leading batch dimension `predict_step`/`plan_step` use in-process
-is omitted on the wire: `reps` is `[T, HW, D]`, `actions`/`states`/`prior_actions`/
-`states_seq` are `[T, 7]` (or `[7]` for a single pose/action like `cur_pose`/
-`target_action`/`found_action`). The service adds the batch dimension back before
-calling the backend and strips it again before responding.
+All endpoints are `POST`, JSON body except where noted.
+
+**Correction (post-implementation, found via real-hardware testing):** the original
+version of this section specified batch-of-1 stripping for `predict_step` too (`reps`
+as `[T, HW, D]`, with the batch dimension added/removed by the service). That was
+wrong: `planning.cem_search` calls `predict_step` with the CEM sample count as the
+batch dimension (not 1) — its whole point is batching all samples for one CEM
+iteration into a single call (see the perf work earlier in this project). Stripping a
+dimension that isn't actually 1 silently mangled the request into a shape Pydantic
+then rejected as `422 Unprocessable Entity` — caught only once real hardware exercised
+the CEM Planning tab and the Dance tab's "Plan with CEM" toggle end-to-end, not by the
+unit tests written against the original (incomplete) understanding of how this
+endpoint gets used. `predict_step` now sends `reps`/`actions`/`states` as safetensors,
+batch dimension included, unchanged from whatever the caller passes — no stripping,
+no convention to get wrong. `encode` and `plan_step` are unaffected: `encode` is
+always genuinely single-frame, and `plan_step`'s own CEM batching happens entirely
+server-side within one call, never back out over HTTP per sample.
 
 ### `POST /encode`
-Stateless: one frame in, one embedding out.
+Stateless: one frame in, one embedding out. The leading batch-of-1 dimension `encode_frame`
+uses in-process is omitted on the response (`rep` is `[HW, D]`, not `[1, HW, D]`) — this
+endpoint adds it back before calling the backend and strips it again before responding.
 
 - Request: `{"frame_png_b64": "<base64 PNG>"}`
 - Response: `{"rep": "<base64 safetensors, one tensor named 'rep'>"}`
 
 ### `POST /predict_step`
 Mirrors `backend.predict_step(reps, actions, states)` exactly — the caller owns its own
-growing context, same as any in-process caller today.
+growing context, same as any in-process caller today, batch dimension included.
 
-- Request: `{"reps": "<base64 safetensors>", "actions": [[...7 floats...], ...], "states": [[...7 floats...], ...]}`
-  (`actions`/`states` are small — `[T, 7]` — so they travel as plain JSON, not safetensors)
+- Request: `{"reps": "<base64 safetensors>", "actions": "<base64 safetensors>", "states": "<base64 safetensors>"}`
+  (all three keep whatever batch dimension the caller used — `[B, T, HW, D]`,
+  `[B, T, 7]`, `[B, T, 7]` — B is 1 for a single session, `samples` for a batched
+  `cem_search` call)
 - Response: `{"next_rep": "<base64 safetensors>", "latency_ms": <float>}`
 
 ### `POST /plan_step`
@@ -116,9 +131,13 @@ caller sees the same exception text a direct in-process call would have raised.
 ## Wire format
 
 - Tensors: `safetensors` (not pickle — no arbitrary code execution risk, and it's the
-  standard for this exact purpose), base64-encoded for JSON embedding.
+  standard for this exact purpose), base64-encoded for JSON embedding. This includes
+  `predict_step`'s `actions`/`states` (not plain JSON — see the correction above).
 - Frames: base64-encoded PNG (`np.ndarray [H,W,3] uint8` <-> PNG round-trip, lossless).
-- Everything else (actions, states, poses, scalars, CEM params): plain JSON.
+- `plan_step`'s own fields (`prior_actions`, `states_seq`, `cur_pose`, `target_action`,
+  `found_action`) stay plain JSON lists — genuinely always single-session shape, no
+  batch dimension ever enters that endpoint's own inputs/outputs.
+- Everything else (scalars, CEM params): plain JSON.
 
 ## Testing
 

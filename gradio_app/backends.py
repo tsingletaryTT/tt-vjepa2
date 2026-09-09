@@ -222,15 +222,22 @@ class RemoteBackend:
         return tensor_from_b64(resp.json()["rep"]).unsqueeze(0)
 
     def predict_step(self, reps: torch.Tensor, actions: torch.Tensor, states: torch.Tensor):
+        """reps/actions/states travel as-is (safetensors), batch dimension included --
+        NOT stripped to a batch-of-1 convention. planning.cem_search calls this with
+        the CEM sample count as the batch dimension, not 1; stripping it here silently
+        produced a malformed request (a real 422, caught by
+        test_remote_backend_predict_step_handles_batched_samples after it broke the
+        CEM Planning tab and the Dance tab's "Plan with CEM" toggle under
+        --backend remote)."""
         sys.path.insert(0, str(REPO_ROOT / "service"))
         from wire import tensor_from_b64, tensor_to_b64
 
         body = {
-            "reps": tensor_to_b64(reps.squeeze(0)),
-            "actions": actions.squeeze(0).tolist(),
-            "states": states.squeeze(0).tolist(),
+            "reps": tensor_to_b64(reps),
+            "actions": tensor_to_b64(actions),
+            "states": tensor_to_b64(states),
         }
         resp = self._client.post("/predict_step", json=body)
         resp.raise_for_status()
         payload = resp.json()
-        return tensor_from_b64(payload["next_rep"]).unsqueeze(0), payload["latency_ms"]
+        return tensor_from_b64(payload["next_rep"]), payload["latency_ms"]

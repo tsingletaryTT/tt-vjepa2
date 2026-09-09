@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "service"))
 from backends import RemoteBackend  # noqa: E402
 from main import create_app  # noqa: E402
+from test_planning import _StubBackend  # noqa: E402
 
 
 class _FixedBackend:
@@ -50,3 +51,22 @@ def test_remote_backend_predict_step_matches_service_result():
     assert next_rep.shape == (1, 2, 3)
     assert torch.equal(next_rep, torch.full((1, 2, 3), 9.0))
     assert latency_ms == 12.5
+
+
+def test_remote_backend_predict_step_handles_batched_samples():
+    """planning.cem_search calls backend.predict_step with the CEM sample count as the
+    batch dimension (not 1) -- e.g. reps/actions/states shaped [samples, 1, ...], not
+    [1, 1, ...]. This is a real, exercised call shape (the CEM Planning tab and the
+    Dance tab's "Plan with CEM" toggle both hit it via cem_search), not a hypothetical
+    edge case -- reproduces a real 422 seen when this went untested."""
+    hw, d, samples = 2, 3, 4
+    backend = _make_remote_backend(_StubBackend(hw, d))
+    reps = torch.arange(samples * hw * d, dtype=torch.float32).reshape(samples, 1, hw, d)
+    actions = torch.arange(samples * 7, dtype=torch.float32).reshape(samples, 1, 7)
+    states = torch.zeros(samples, 1, 7)
+
+    next_rep, latency_ms = backend.predict_step(reps, actions, states)
+
+    assert next_rep.shape == (samples, hw, d)
+    expected = actions.mean(dim=(1, 2)).view(samples, 1, 1).expand(samples, hw, d)
+    assert torch.allclose(next_rep, expected)
