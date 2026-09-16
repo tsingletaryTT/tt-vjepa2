@@ -139,11 +139,14 @@ class TTNNBackend:
     name = "ttnn-blackhole"
 
     def __init__(self, tt_metal_home: str | None = None, device_id: int = 0):
+        # In a packaged v6 thin venv, `tt`/`ttnn`/`models.common` are real pip-installed
+        # packages and need no sys.path help. TT_METAL_HOME is only for local dev against
+        # a manual tt-metal checkout instead of an installed one -- optional, not required
+        # (this used to hard-require it, which made this class unusable in the packaged
+        # bundle, where no such checkout exists at all).
         tt_metal_home = tt_metal_home or os.environ.get("TT_METAL_HOME")
-        if not tt_metal_home:
-            raise RuntimeError("Set TT_METAL_HOME (or pass tt_metal_home=) to a tt-metal checkout.")
-        sys.path.insert(0, tt_metal_home)
-        sys.path.insert(0, str(REPO_ROOT))
+        if tt_metal_home:
+            sys.path.insert(0, tt_metal_home)
 
         from tt.functional_encoder import VJEPA2Encoder, VJEPA2EncoderConfig
         from tt.functional_predictor import VJEPA2Predictor, VJEPA2PredictorConfig
@@ -214,8 +217,7 @@ class RemoteBackend:
         self._client.close()
 
     def encode_frame(self, frame_uint8: np.ndarray) -> torch.Tensor:
-        sys.path.insert(0, str(REPO_ROOT / "service"))
-        from wire import frame_to_b64, tensor_from_b64
+        from service.wire import frame_to_b64, tensor_from_b64
 
         resp = self._client.post("/encode", json={"frame_png_b64": frame_to_b64(frame_uint8)})
         resp.raise_for_status()
@@ -229,8 +231,7 @@ class RemoteBackend:
         test_remote_backend_predict_step_handles_batched_samples after it broke the
         CEM Planning tab and the Dance tab's "Plan with CEM" toggle under
         --backend remote)."""
-        sys.path.insert(0, str(REPO_ROOT / "service"))
-        from wire import tensor_from_b64, tensor_to_b64
+        from service.wire import tensor_from_b64, tensor_to_b64
 
         body = {
             "reps": tensor_to_b64(reps),

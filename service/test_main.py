@@ -4,18 +4,14 @@ real socket, no hardware) against a stub backend. Covers /encode, /predict_step,
 /plan_step round-trip correctness and the error-handling contract."""
 
 import asyncio
-import sys
-from pathlib import Path
 
 import httpx
 import numpy as np
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gradio_app"))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from main import create_app  # noqa: E402
-from test_planning import _StubBackend  # noqa: E402
-from wire import frame_to_b64, tensor_from_b64, tensor_to_b64  # noqa: E402
+from gradio_app.test_planning import _StubBackend
+from service.main import create_app
+from service.wire import frame_to_b64, tensor_from_b64, tensor_to_b64
 
 
 class _FixedBackend:

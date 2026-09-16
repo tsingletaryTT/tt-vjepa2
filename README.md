@@ -7,10 +7,12 @@ manipulation tasks without task-specific training. Runs the ViT-giant encoder
 (40 blocks, 1408 hidden, 22 heads) and the AC predictor (24 blocks, 1024 hidden, 16
 heads) end-to-end on Tenstorrent Blackhole hardware.
 
-This repo is the bring-up code only — it depends on a
+For local development this still depends on a
 [tt-metal](https://github.com/tenstorrent/tt-metal) checkout for `ttnn` and a couple of
-small shared utilities (`models.common.lightweightmodule`,
-`models.common.tensor_utils`). It is not a standalone pip package.
+small shared utilities (`models.common.lightweightmodule`, `models.common.tensor_utils`)
+via `$TT_METAL_HOME`. It is also now a real installable package (`pyproject.toml` at the
+repo root, packaging `tt`/`gradio_app`/`service`) — see "v6 thin packaging" below for the
+served path, which needs neither a manual checkout nor `$TT_METAL_HOME` at all.
 
 See [MODEL_CARD.md](MODEL_CARD.md) for intended use, evaluation data, and — stated
 plainly rather than glossed over — real results on the IntPhys 2 physical-reasoning
@@ -152,6 +154,53 @@ Endpoints: `POST /encode` (frame → embedding), `POST /predict_step` (mirrors t
 in-process primitive exactly — the caller owns its own growing context), and
 `POST /plan_step` (goal-directed: CEM searches for a real action reaching a probed
 goal, wraps `planning.plan_step`).
+
+## v6 thin packaging
+
+Packaged for [tt-model-manager](https://github.com/tenstorrent/tt-kernel-package-manager)'s
+`tt-dit-server` kind (no tokens/KV-cache/continuous batching — an action-conditioned
+world model has nothing for vLLM to do), the same non-LLM kind tt-waypoint and
+tt-skyreels use. `service.main:app` is the served ASGI target — its module-level `app`
+touches zero hardware at import time (routes read `app.state.worker`, populated only
+once a `_lifespan` startup handler actually runs), matching the same two contracts every
+`tt-dit-server` kind needs: readiness is the lifespan, importing must not open a device.
+
+**What ships:** this repo's own `vjepa2-ttnn` wheel (built from the root
+`pyproject.toml`) plus a small `tt-vjepa2-models-closure` wheel vendoring the two real
+tt-metal modules the model needs — `models/common/lightweightmodule.py` and
+`models/common/tensor_utils.py` — pinned to tt-metal v0.78.0. Not the real upstream
+`tt-metal-models` package ([tenstorrent/tt-metal#54478](https://github.com/tenstorrent/tt-metal/issues/54478)),
+a narrower local stand-in, following tt-waypoint-models-closure's precedent exactly.
+
+**A real bug, caught only by actually serving.** The first packaged bundle's `/encode`
+call failed with `No module named 'models.common.tensor_utils'` — `functional_encoder.py`
+imports it lazily inside a function body (`get_rot_transformation_mat`, only reached at
+call time), not at module scope, so a plain grep of the file's top-of-file imports missed
+it entirely when the closure wheel was first built. Fixed by adding the one missing file
+to the closure wheel; every other bug this repo's other bring-ups have hit followed the
+same shape — something a build-time `verify` step, which never opens a device, cannot see.
+
+**Verified end to end on real hardware** (1-chip Blackhole, via the encoder+predictor's
+existing checkpoint): a real `/encode` call returns a properly layer-normalized embedding
+(shape `[256, 1408]`, mean ≈0, std ≈1); a real `/predict_step` call returns a real next
+embedding; a real `/plan_step` call returns a plausible 7-DoF action close to the probed
+target and a real CEM energy value; and a determinism check — the same frame encoded
+twice — comes back bit-identical.
+
+**Local packaging recipe**, if you need to rebuild it: `uv build --wheel` from the repo
+root for the served-path closure; vendor the two `models/common/*.py` files above into a
+second wheel with the same minimal `[tool.setuptools.packages.find] include = ["models*"]`
+pattern; then
+```bash
+tt-model package-thin --name tt-vjepa2 --model-py service/main.py \
+  --kind tt-dit-server --app service.main:app \
+  --requirements requirements.txt \
+  --models-wheel <vjepa2-ttnn wheel> --models-wheel <tt-vjepa2-models-closure wheel> \
+  --arch blackhole --weights episod/vjepa2-ac-vitg-fpc64-256-droid-tt \
+  --mesh P150 --device-count 1 --out <staging-dir>
+```
+(`package-thin` is beta/unsupported — the v6 thin format overall is still gated on the
+upstream `tt-metal-models` wheel publishing, tt-metal#54478.)
 
 ## IntPhys 2 evaluation
 

@@ -2,14 +2,10 @@
 """Round-trip tests for the service's wire (de)serialization helpers -- tensors via
 base64-encoded safetensors, frames via base64-encoded PNG. No FastAPI/hardware needed."""
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from wire import frame_from_b64, frame_to_b64, tensor_from_b64, tensor_to_b64  # noqa: E402
+from service.wire import frame_from_b64, frame_to_b64, tensor_from_b64, tensor_to_b64
 
 
 def test_tensor_roundtrip_preserves_shape_and_values():

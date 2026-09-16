@@ -11,15 +11,11 @@ equivalence, plus the call-count itself, is what these tests verify. No hardware
 needed: a deterministic stub stands in for the backend.
 """
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from planning import cem_search, l2, l2_batched, plan_step  # noqa: E402
+from gradio_app.planning import cem_search, l2, l2_batched, plan_step
 
 
 class _StubBackend:

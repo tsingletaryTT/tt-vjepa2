@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
+*.egg-info/
+/build/
 generated/
 
 # Runtime prerequisites documented in the README, cloned/built locally --
@@ -7,3 +9,4 @@ generated/
 # right; get it via `git clone https://github.com/facebookresearch/vjepa2 reference`).
 .venv/
 /reference/
+uv.lock

@@ -4,18 +4,13 @@ FastAPI service app (service/main.py), in-process via starlette.testclient.TestC
 (a sync-compatible ASGI transport -- no real socket, no hardware). TestClient subclasses
 httpx.Client, so it's a drop-in for RemoteBackend's real (httpx.Client-based) usage."""
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import torch
 from starlette.testclient import TestClient
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "service"))
-from backends import RemoteBackend  # noqa: E402
-from main import create_app  # noqa: E402
-from test_planning import _StubBackend  # noqa: E402
+from gradio_app.backends import RemoteBackend
+from gradio_app.test_planning import _StubBackend
+from service.main import create_app
 
 
 class _FixedBackend:

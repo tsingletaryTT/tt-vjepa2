@@ -5,16 +5,13 @@ this is the service-side equivalent of the concurrency_id fix applied to Gradio,
 protecting any client rather than only Gradio's own tabs."""
 
 import asyncio
-import sys
 import threading
 import time
-from pathlib import Path
 
 import numpy as np
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from worker import BackendWorker  # noqa: E402
+from service.worker import BackendWorker
 
 
 class _StubBackend:

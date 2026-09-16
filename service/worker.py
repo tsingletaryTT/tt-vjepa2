@@ -8,12 +8,9 @@ dedicated worker thread with its own FIFO work queue -- no need to hand-roll one
 """
 
 import asyncio
-import sys
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gradio_app"))
-from planning import plan_step as plan_step_fn  # noqa: E402
+from gradio_app.planning import plan_step as plan_step_fn
 
 
 class BackendWorker:
