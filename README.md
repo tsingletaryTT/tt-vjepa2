@@ -7,12 +7,14 @@ manipulation tasks without task-specific training. Runs the ViT-giant encoder
 (40 blocks, 1408 hidden, 22 heads) and the AC predictor (24 blocks, 1024 hidden, 16
 heads) end-to-end on Tenstorrent Blackhole hardware.
 
-For local development this still depends on a
-[tt-metal](https://github.com/tenstorrent/tt-metal) checkout for `ttnn` and a couple of
-small shared utilities (`models.common.lightweightmodule`, `models.common.tensor_utils`)
-via `$TT_METAL_HOME`. It is also now a real installable package (`pyproject.toml` at the
-repo root, packaging `tt`/`gradio_app`/`service`) — see "v6 thin packaging" below for the
-served path, which needs neither a manual checkout nor `$TT_METAL_HOME` at all.
+For local development this depends on `ttnn` (a
+[tt-metal](https://github.com/tenstorrent/tt-metal) checkout via `$TT_METAL_HOME`, or the
+`ttnn` wheel) and on two small tooling modules from
+[tt-transformers](https://github.com/tenstorrent/tt-transformers):
+`tt_transformers.modules.lightweightmodule` and `tt_transformers.tensor_utils`. Put
+tt-transformers' `src/` on `PYTHONPATH` (or install it) when you run the scripts below.
+The served path ships as a v6 thin bundle that needs none of that on the host; see
+"v6 thin packaging".
 
 See [MODEL_CARD.md](MODEL_CARD.md) for intended use, evaluation data, and — stated
 plainly rather than glossed over — real results on the IntPhys 2 physical-reasoning
@@ -96,6 +98,7 @@ on real checkpoint weights):
 ```bash
 git clone https://github.com/facebookresearch/vjepa2 reference
 export TT_METAL_HOME=/path/to/tt-metal   # not needed for cpu_benchmark.py or --backend reference
+export PYTHONPATH=/path/to/tt-transformers/src:$PYTHONPATH   # the two tooling modules (see top)
 
 mkdir -p ~/.cache/vjepa2
 cp /path/to/vjepa2-ac-vitg.inference.pt ~/.cache/vjepa2/  # matches the CKPT_PATH each script hardcodes
@@ -157,50 +160,61 @@ goal, wraps `planning.plan_step`).
 
 ## v6 thin packaging
 
-Packaged for [tt-model-manager](https://github.com/tenstorrent/tt-kernel-package-manager)'s
-`tt-dit-server` kind (no tokens/KV-cache/continuous batching — an action-conditioned
-world model has nothing for vLLM to do), the same non-LLM kind tt-waypoint and
-tt-skyreels use. `service.main:app` is the served ASGI target — its module-level `app`
-touches zero hardware at import time (routes read `app.state.worker`, populated only
-once a `_lifespan` startup handler actually runs), matching the same two contracts every
-`tt-dit-server` kind needs: readiness is the lifespan, importing must not open a device.
+Packaged for [tt-model-manager](https://github.com/tenstorrent/tt-model-manager)'s
+`tt-dit-server` kind (no tokens, KV cache or continuous batching, so there is nothing for
+vLLM to do), the same non-LLM kind tt-waypoint and tt-skyreels use. `service.main:app` is
+the served ASGI target. Its module-level `app` touches no hardware at import time: routes
+read `app.state.worker`, which is filled only when the `_lifespan` startup handler runs.
 
-**What ships:** this repo's own `vjepa2-ttnn` wheel (built from the root
-`pyproject.toml`) plus a small `tt-vjepa2-models-closure` wheel vendoring the two real
-tt-metal modules the model needs — `models/common/lightweightmodule.py` and
-`models/common/tensor_utils.py` — pinned to tt-metal v0.78.0. Not the real upstream
-`tt-metal-models` package ([tenstorrent/tt-metal#54478](https://github.com/tenstorrent/tt-metal/issues/54478)),
-a narrower local stand-in, following tt-waypoint-models-closure's precedent exactly.
-
-**A real bug, caught only by actually serving.** The first packaged bundle's `/encode`
-call failed with `No module named 'models.common.tensor_utils'` — `functional_encoder.py`
-imports it lazily inside a function body (`get_rot_transformation_mat`, only reached at
-call time), not at module scope, so a plain grep of the file's top-of-file imports missed
-it entirely when the closure wheel was first built. Fixed by adding the one missing file
-to the closure wheel; every other bug this repo's other bring-ups have hit followed the
-same shape — something a build-time `verify` step, which never opens a device, cannot see.
-
-**Verified end to end on real hardware** (1-chip Blackhole, via the encoder+predictor's
-existing checkpoint): a real `/encode` call returns a properly layer-normalized embedding
-(shape `[256, 1408]`, mean ≈0, std ≈1); a real `/predict_step` call returns a real next
-embedding; a real `/plan_step` call returns a plausible 7-DoF action close to the probed
-target and a real CEM energy value; and a determinism check — the same frame encoded
-twice — comes back bit-identical.
-
-**Local packaging recipe**, if you need to rebuild it: `uv build --wheel` from the repo
-root for the served-path closure; vendor the two `models/common/*.py` files above into a
-second wheel with the same minimal `[tool.setuptools.packages.find] include = ["models*"]`
-pattern; then
 ```bash
-tt-model package-thin --name tt-vjepa2 --model-py service/main.py \
-  --kind tt-dit-server --app service.main:app \
-  --requirements requirements.txt \
-  --models-wheel <vjepa2-ttnn wheel> --models-wheel <tt-vjepa2-models-closure wheel> \
-  --arch blackhole --weights episod/vjepa2-ac-vitg-fpc64-256-droid-tt \
-  --mesh P150 --device-count 1 --out <staging-dir>
+packaging/package-thin.sh <out-dir>     # stages only; never pushes
 ```
-(`package-thin` is beta/unsupported — the v6 thin format overall is still gated on the
-upstream `tt-metal-models` wheel publishing, tt-metal#54478.)
+
+`packaging/package-thin.sh` is the one rerunnable recipe, and each file next to it has one
+job:
+
+| file | job |
+|---|---|
+| `package-thin.sh` | builds the inputs, then runs `tt-model package-thin` without a repo id |
+| `requirements.txt`, `constraints.txt` | the bundle's pins; `regen-constraints.sh` rewrites the second from the first |
+| `make_tooling_wheel.py` | cuts the tooling-only tt-transformers wheel from a pinned commit |
+| `model.py` | the `--model-py` entry point (no vLLM adapter is needed for this kind) |
+| `test_package_thin.py` | checks the recipe's flags, imports and install guards without a card |
+
+The bundle follows the canonical v6 shape from tt-model-manager's `docs/E2E_RECIPE_V6.md`:
+
+- **Engine:** stock `ttnn==0.78.0` from PyPI, the release this model was verified on.
+- **Custom kernels:** none. The model is written in ttnn ops, so there is no `generic_op`
+  wheel and `deps.custom_ops` is empty. This is the one part of the shape that does not apply.
+- **Tooling:** tt-transformers as tooling only (a wheel with `models/` emptied and its own
+  pins removed, shipped with `--ops-wheel`). The model uses two of its modules,
+  `modules.lightweightmodule` and `tensor_utils.get_rot_transformation_mat`. The latter is
+  identical to the copy in tt-metal v0.78.0 that the model used before.
+- **Model code:** `tt/`, `gradio_app/` (backends and planning only) and `service/` ship inside
+  the bundle as `extra_code/`, from an explicit file list in the script.
+- **Dependency safety:** `--constraints` with every package pinned, and no index options in
+  `requirements.txt`. `huggingface_hub` ships as a bundled wheel (sha256-checked) because its
+  closure (`requests`, `certifi`, `urllib3`) is what the PyTorch CPU index would supply at
+  stale versions. `idna` is a direct-URL requirement for the same reason.
+- **Capabilities:** no tool or reasoning parser applies; this model has no tokens.
+- **Weights:** the checkpoint is a pointer to
+  `episod/vjepa2-ac-vitg-fpc64-256-droid-tt`, pinned to revision `16c9081`. The served code
+  resolves it with `$VJEPA2_CKPT`, then the developer copy at `CKPT_PATH` if present, then
+  `hf_hub_download` of that pinned revision. Before this change the served path read
+  `CKPT_PATH` only, a path that exists on the bring-up machine and nowhere else.
+
+**What is verified and what is not.** The recipe stages cleanly, `install.sh` finishes in a
+copy of the staged folder with every `--verify` guard passing, and `import model` works from
+that copy without importing `ttnn`. The earlier hardware results (a real `/encode`,
+`/predict_step` and `/plan_step` on one Blackhole chip) were obtained with the previous
+bundle shape. They have not been repeated on this one. Serving the new bundle on a card and
+repeating those three calls is still to do.
+
+**An earlier bug worth remembering.** The first packaged bundle's `/encode` call failed with
+`No module named 'models.common.tensor_utils'`. `functional_encoder.py` imports it inside a
+function body, so a grep of top-of-file imports missed it. `test_package_thin.py` now walks
+every import in the shipped files, lazy ones included. A build-time check that never opens a
+device cannot see this kind of fault, so serve the bundle once on hardware before publishing.
 
 ## IntPhys 2 evaluation
 

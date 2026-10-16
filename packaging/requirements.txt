@@ -1,0 +1,27 @@
+# Index pins for the tt-vjepa2 v6 thin bundle (kind "tt-dit-server": no vLLM, no tokens, no
+# KV cache). Stock ttnn from PyPI. There are NO index options in this file: pip and uv honour
+# them here and they re-rank the indexes for the whole resolve. constraints.txt pins every
+# resolved package, including the ones this file does not name.
+ttnn==0.78.0              # the release the model was brought up and verified on (tt-metal v0.78.0)
+torch==2.14.0+cpu         # ttnn declares no torch dependency, but the model code uses torch tensors
+                          # (checkpoint load, host-side preprocessing). The +cpu build comes from the
+                          # PyTorch CPU index that package-thin's engine step adds on its own.
+safetensors>=0.4.0,<1     # service/wire.py serialises tensors on the wire with safetensors
+pillow                    # service/wire.py decodes the PNG frame
+numpy<2                   # ttnn needs numpy<2
+#
+# The HTTP stack every tt-dit-server bundle needs (run.sh serves the app with uvicorn):
+fastapi
+uvicorn
+pydantic>=2
+#
+# idna is pinned to a wheel URL on purpose. The engine step adds the PyTorch CPU index ahead of
+# PyPI, and that index carries idna 3.4 and nothing newer (fastapi reaches idna through
+# anyio). 3.4 predates the CVE-2024-3651 fix in 3.7. A direct URL is not subject to index
+# ranking, so the install gets the version in constraints.txt. The path contains the file's
+# content hash. Remove this line once package-thin scopes the CPU index to torch.
+idna @ https://files.pythonhosted.org/packages/58/a2/bb081bab032533a855d44de1d56f8e8426114ff1ba5d1f07a438a0a654f8/idna-3.20-py3-none-any.whl
+#
+# huggingface_hub is NOT here. It needs requests, certifi and urllib3, which the CPU index
+# would also supply at stale versions. package-thin.sh ships it as a bundled wheel instead
+# (installed by path after this step, resolved from PyPI under constraints.txt).

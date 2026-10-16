@@ -23,7 +23,17 @@ import torch
 import torch.nn.functional as F
 
 REPO_ROOT = Path(__file__).resolve().parent.parent  # repo root
+# Where the checkpoint comes from, in order (see _resolve_checkpoint):
+#   1. $VJEPA2_CKPT, an explicit path.
+#   2. CKPT_PATH, the developer's local copy, when it exists (this box only).
+#   3. The weights repo below, pinned to one revision. A packaged bundle always lands here:
+#      `tt-model` pre-fetches the same repo and revision into the bundle's HF cache.
 CKPT_PATH = "/home/ttuser/.cache/vjepa2/vjepa2-ac-vitg.inference.pt"
+WEIGHTS_REPO = "episod/vjepa2-ac-vitg-fpc64-256-droid-tt"
+WEIGHTS_FILE = "vjepa2-ac-vitg.inference.pt"
+# Must equal --weights-revision in packaging/package-thin.sh (packaging/test_package_thin.py
+# checks that they match).
+PINNED_WEIGHTS_REVISION = "16c90813600ae343866eff37b6b4ad1e834a6a8a"
 
 PATCH_SIZE = 16
 TUBELET_SIZE = 2
@@ -31,8 +41,30 @@ IMG_SIZE = 256
 GRID = IMG_SIZE // PATCH_SIZE  # 16 -> 256 tokens/frame
 
 
+def _resolve_checkpoint() -> str:
+    """Path of the V-JEPA2-AC checkpoint file. See the comment above CKPT_PATH for the order.
+
+    Before this existed the served path read CKPT_PATH unconditionally, a path that exists
+    only on the machine the model was brought up on, so a bundle pulled onto any other host
+    could not load its weights."""
+    explicit = os.environ.get("VJEPA2_CKPT")
+    if explicit:
+        return explicit
+    if os.path.exists(CKPT_PATH):
+        return CKPT_PATH
+    # Imported here so the CPU-only and test paths do not need huggingface_hub at import time.
+    from huggingface_hub import hf_hub_download
+
+    # $HF_MODEL is exported by the bundle's run.sh and holds the manifest's weights id.
+    return hf_hub_download(
+        repo_id=os.environ.get("HF_MODEL", WEIGHTS_REPO),
+        filename=WEIGHTS_FILE,
+        revision=PINNED_WEIGHTS_REVISION,
+    )
+
+
 def _load_checkpoint():
-    ckpt = torch.load(CKPT_PATH, map_location="cpu", weights_only=False)
+    ckpt = torch.load(_resolve_checkpoint(), map_location="cpu", weights_only=False)
     return ckpt["encoder"], ckpt["predictor"]
 
 
@@ -139,11 +171,12 @@ class TTNNBackend:
     name = "ttnn-blackhole"
 
     def __init__(self, tt_metal_home: str | None = None, device_id: int = 0):
-        # In a packaged v6 thin venv, `tt`/`ttnn`/`models.common` are real pip-installed
-        # packages and need no sys.path help. TT_METAL_HOME is only for local dev against
-        # a manual tt-metal checkout instead of an installed one -- optional, not required
-        # (this used to hard-require it, which made this class unusable in the packaged
-        # bundle, where no such checkout exists at all).
+        # In a packaged v6 thin bundle, `ttnn` and `tt_transformers` (tooling only) are
+        # pip-installed and `tt`/`gradio_app`/`service` ship as the bundle's extra_code, so
+        # no sys.path help is needed. TT_METAL_HOME is only for local dev against a manual
+        # tt-metal checkout instead of an installed one -- optional, not required (this used
+        # to hard-require it, which made this class unusable in the packaged bundle, where
+        # no such checkout exists at all).
         tt_metal_home = tt_metal_home or os.environ.get("TT_METAL_HOME")
         if tt_metal_home:
             sys.path.insert(0, tt_metal_home)

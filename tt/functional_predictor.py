@@ -42,7 +42,7 @@ from tt.functional_encoder import (
 )
 
 import ttnn
-from models.common.lightweightmodule import LightweightModule
+from tt_transformers.modules.lightweightmodule import LightweightModule
 
 
 @dataclass
