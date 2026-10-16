@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vjepa2-ttnn"
-version = "0.1.0"
-description = "V-JEPA2-AC action-conditioned world model on Tenstorrent Blackhole via TTNN. `uv build` here packages the served-path closure -- service/ (the ASGI app), gradio_app/'s backend + planning modules, and tt/'s encoder+predictor -- plus each package's own tests, mirroring waypoint-ttnn's precedent of shipping the full find()-based tree rather than a hand-curated subset. Does NOT include scripts/, docs/, or the vendored reference/ tree (Meta's own repo, used only by ReferenceBackend for local CPU comparison, never by the served TTNN path)."
+version = "0.2.0"
+description = "V-JEPA2-AC action-conditioned world model on Tenstorrent Blackhole via TTNN. A development install of the tt/, gradio_app/ and service/ packages. The v6 thin bundle does not use this wheel: packaging/package-thin.sh ships a fixed list of these files as the bundle's extra_code. Does NOT include scripts/, docs/, or the vendored reference/ tree."
 requires-python = ">=3.10"
 
 [tool.setuptools.packages.find]

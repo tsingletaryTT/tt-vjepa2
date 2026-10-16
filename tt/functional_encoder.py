@@ -23,7 +23,7 @@ from dataclasses import dataclass
 import torch
 
 import ttnn
-from models.common.lightweightmodule import LightweightModule
+from tt_transformers.modules.lightweightmodule import LightweightModule
 
 _USE_MANUAL_ATTENTION = False  # debug flag; see RoPEAttention.forward
 
@@ -235,7 +235,7 @@ def get_rope_trans_mat(device, dtype=ttnn.bfloat16) -> "ttnn.Tensor":
     """The (1,1,32,32) adjacent-pair rotation matrix `rotary_embedding_llama` needs --
     constant, independent of position/resolution, so built once and reused for every
     call (q and k, every block, both the encoder and the predictor)."""
-    from models.common.tensor_utils import get_rot_transformation_mat
+    from tt_transformers.tensor_utils import get_rot_transformation_mat
 
     key = id(device)
     if key not in _ROPE_TRANS_MAT_CACHE:

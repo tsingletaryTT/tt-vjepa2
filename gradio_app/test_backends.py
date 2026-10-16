@@ -65,3 +65,62 @@ def test_remote_backend_predict_step_handles_batched_samples():
     assert next_rep.shape == (samples, hw, d)
     expected = actions.mean(dim=(1, 2)).view(samples, 1, 1).expand(samples, hw, d)
     assert torch.allclose(next_rep, expected)
+
+
+# --- checkpoint resolution ------------------------------------------------------------------
+# A packaged bundle runs on a host that has none of the developer's files, so where the
+# checkpoint comes from has to be decided by environment and the pinned weights repo.
+
+import sys  # noqa: E402
+import types  # noqa: E402
+
+from gradio_app import backends  # noqa: E402
+
+
+def _fake_hf_hub(monkeypatch, calls):
+    """Install a stand-in huggingface_hub whose hf_hub_download records its arguments."""
+
+    def hf_hub_download(**kwargs):
+        calls.append(kwargs)
+        return "/hub/cache/vjepa2-ac-vitg.inference.pt"
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", types.SimpleNamespace(hf_hub_download=hf_hub_download))
+
+
+def test_checkpoint_env_override_wins(monkeypatch, tmp_path):
+    calls = []
+    _fake_hf_hub(monkeypatch, calls)
+    local = tmp_path / "local.pt"
+    local.write_bytes(b"x")
+    monkeypatch.setattr(backends, "CKPT_PATH", str(local))  # also present, but the env var outranks it
+    monkeypatch.setenv("VJEPA2_CKPT", "/explicit/ckpt.pt")
+    assert backends._resolve_checkpoint() == "/explicit/ckpt.pt"
+    assert calls == []
+
+
+def test_checkpoint_uses_the_developer_copy_when_it_exists(monkeypatch, tmp_path):
+    calls = []
+    _fake_hf_hub(monkeypatch, calls)
+    local = tmp_path / "local.pt"
+    local.write_bytes(b"x")
+    monkeypatch.setattr(backends, "CKPT_PATH", str(local))
+    monkeypatch.delenv("VJEPA2_CKPT", raising=False)
+    assert backends._resolve_checkpoint() == str(local)
+    assert calls == []
+
+
+def test_checkpoint_downloads_the_pinned_revision_on_a_host_without_the_file(monkeypatch, tmp_path):
+    """The bundle case. The old code read CKPT_PATH unconditionally and failed here."""
+    calls = []
+    _fake_hf_hub(monkeypatch, calls)
+    monkeypatch.setattr(backends, "CKPT_PATH", str(tmp_path / "absent.pt"))
+    monkeypatch.delenv("VJEPA2_CKPT", raising=False)
+    monkeypatch.setenv("HF_MODEL", "episod/vjepa2-ac-vitg-fpc64-256-droid-tt")  # run.sh exports this
+    assert backends._resolve_checkpoint() == "/hub/cache/vjepa2-ac-vitg.inference.pt"
+    assert calls == [
+        {
+            "repo_id": "episod/vjepa2-ac-vitg-fpc64-256-droid-tt",
+            "filename": "vjepa2-ac-vitg.inference.pt",
+            "revision": backends.PINNED_WEIGHTS_REVISION,
+        }
+    ]
